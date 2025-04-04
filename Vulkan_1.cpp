@@ -15,6 +15,7 @@
 #include <cstdint> // Necessary for uint32_t
 #include <limits> // Necessary for std::numeric_limits
 #include <algorithm> // Necessary for std::clamp
+#include <fstream>
 class HelloTriangleApplication {
 public:
 	void run() {
@@ -23,6 +24,27 @@ public:
 		mainLoop();
 		cleanup();
 	};
+
+	//读取文件内容到vector<char>中
+	static std::vector<char> readFile(const std::string& filename) {
+		//std::ios::ate表示打开文件时将文件指针移动到文件末尾，std::ios::binary表示以二进制模式打开文件
+		//从文件末尾开始读取的优势在于，我们可以利用读取位置来确定文件的大小并分配缓冲区：
+		std::ifstream file(filename, std::ios::ate | std::ios::binary);
+		//文件大小
+		if (!file.is_open()) {
+			throw std::runtime_error("failed to open file!");
+		}
+		size_t fileSize = (size_t)file.tellg();
+		std::vector<char> buffer(fileSize);
+
+		file.seekg(0);
+		file.read(buffer.data(), fileSize);
+
+		file.close();
+
+		return buffer;
+
+	}
 
 	//获取扩展
 	void getExtensions() {
@@ -52,6 +74,8 @@ private:
 
 	//显示器抽象
 	VkSurfaceKHR surface;
+
+
 
 	//验证层
 	const std::vector<const char*> validationLayers = {
@@ -91,7 +115,12 @@ private:
 		std::vector<VkPresentModeKHR> presentModes;
 	};
 
-	
+	std::vector<VkImageView> swapChainImageViews;
+
+	//图形管线
+	VkRenderPass renderPass;
+	VkPipeline graphicsPipeline;
+	VkPipelineLayout pipelineLayout;
 	//开启验证层
 #ifdef NDEBUG
 	const bool enableValidationLayers = false;
@@ -119,8 +148,350 @@ private:
 		pickPhysicalDevice();
 		createLogicalDevice();
 		createSwapChain();
-		
+		createImageViews();
+		createRenderPass();
+		createGraphicsPipeline();
 	}
+
+	//创建渲染通道
+	void createRenderPass() {
+		//渲染通道描述
+		VkAttachmentDescription colorAttachment{};
+		//颜色附件的格式应与交换链图像的格式相匹配，而且我们目前还没有使用多重采样，所以就采用 1 次采样。
+		colorAttachment.format = swapChainImageFormat;
+		colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+
+		//指定颜色附件的加载操作和存储操作,有以下几种操作：
+		//VK_ATTACHMENT_LOAD_OP_LOAD：在开始渲染之前从颜色附件中加载数据
+		//VK_ATTACHMENT_LOAD_OP_CLEAR：在开始渲染之前清除颜色附件
+		//VK_ATTACHMENT_LOAD_OP_DONT_CARE：不使用颜色附件中的数据
+		//VK_ATTACHMENT_STORE_OP_STORE：在渲染完成后将颜色附件的内容存储到内存中
+		//VK_ATTACHMENT_STORE_OP_DONT_CARE：不存储颜色附件的内容
+		colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+		//我们暂时不对模版缓冲区进行操作，所以我们将 stencilLoadOp 和 stencilStoreOp 
+		// 设置为 VK_ATTACHMENT_LOAD_OP_DONT_CARE 和 VK_ATTACHMENT_STORE_OP_DONT_CARE。
+		colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+		//指定颜色附件的初始布局和最终布局，常见的布局有：
+		//VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL：用作颜色附件时的布局
+		//VK_IMAGE_LAYOUT_PRESENT_SRC_KHR：交换链图像的布局
+		//VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL：用作内存传输的目标时的布局
+		colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		/*initialLayout  指定了在渲染过程开始前图像将采用的布局。 finalLayout指定了在渲染过程结束后自动转换到的布局。
+		使用 VK_IMAGE_LAYOUT_UNDEFINED 作为  initialLayout  意味着我们不在乎图像之前的布局是什么。
+		这个特殊值的注意事项是图像的内容不能保证被保留，但这没关系，因为我们无论如何都要清除它。
+		我们希望在渲染完成后图像能准备好通过交换链进行展示,这就是为什么我们将 VK_IMAGE_LAYOUT_PRESENT_SRC_KHR  
+		用作 finalLayout 的原因。*/
+
+		//渲染通道子通道和附件引用描述
+		/*` attachment ` 参数通过其在附件描述数组中的索引来指定要引用的附件。我们的数组仅包含一个 ` VkAttachmentDescription `，
+		因此其索引为 ` 0 `。` layout ` 指定了在使用此引用的子传递期间，我们希望附件采用的布局。
+		当子传递开始时，Vulkan 会自动将附件转换为此布局。我们打算将附件用作颜色缓冲区，
+		而 ` VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ` 布局将为我们提供最佳性能，正如其名称所暗示的那样。*/
+		VkAttachmentReference colorAttachmentRef{};
+		colorAttachmentRef.attachment = 0;
+		colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+		//子通道描述
+		VkSubpassDescription subpass{};
+		subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		//指定子通道的输入附件数量,并指定输入附件的引用
+		subpass.colorAttachmentCount = 1;
+		subpass.pColorAttachments = &colorAttachmentRef;
+		/*此数组中附件的索引通过  layout(location = 0) out vec4 outColor  指令直接从片段着色器中引用！
+		以下其他类型的附件可以被子传递引用：
+		pInputAttachments: 从着色器中读取的附件
+		pResolveAttachments: 用于多重采样颜色附件的附件
+		pDepthStencilAttachment: 用于深度和模板数据的附件
+		pPreserveAttachments: 此子流程未使用的附件，但其中的数据必须保留*/
+
+
+		VkRenderPassCreateInfo renderPassInfo{};
+		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+		renderPassInfo.attachmentCount = 1;
+		renderPassInfo.pAttachments = &colorAttachment;
+		renderPassInfo.subpassCount = 1;
+		renderPassInfo.pSubpasses = &subpass;
+
+		if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create render pass!");
+		}
+
+	}
+
+
+	//创建图形管线
+	void createGraphicsPipeline() {
+		
+		auto vertShaderCode = readFile("shaders/vert.spv");
+		auto fragShaderCode = readFile("shaders/frag.spv");
+
+		/*着色器模块只是我们之前从文件中加载的着色器字节码以及其中定义的函数的一个薄薄的封装。
+		SPIR-V 字节码编译和链接为 GPU 执行的机器代码的过程要到图形管线创建时才会发生。
+		这意味着一旦管线创建完成，我们就可以再次销毁着色器模块，这就是为什么我们要在 
+		createGraphicsPipeline  函数中将它们声明为局部变量，而不是类成员的原因。*/
+
+		VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+		VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+		//着色器阶段创建信息
+		VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+		vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		//指定作用的渲染管线阶段
+		vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+		vertShaderStageInfo.module = vertShaderModule;
+		//指定着色器模块的入口函数
+		vertShaderStageInfo.pName = "main";
+		/*还有一个（可选）成员  pSpecializationInfo ，我们在此处不会使用它，但它值得讨论一下。
+		它允许您为着色器常量指定值。您可以使用单个着色器模块，在创建管线时通过为其中使用的常量
+		指定不同的值来配置其行为。这比在渲染时使用变量配置着色器更高效，因为编译器可以进行诸如
+		消除依赖于这些值的  if  语句之类的优化。如果您没有这样的常量，则可以将该成员设置为  nullptr ，
+		我们的结构体初始化会自动执行此操作。*/
+
+		VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+		fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+		fragShaderStageInfo.module = fragShaderModule;
+		fragShaderStageInfo.pName = "main";
+
+		VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
+
+		//支持管线状态动态设置
+		std::vector<VkDynamicState> dynamicStates = {
+			VK_DYNAMIC_STATE_VIEWPORT,
+			VK_DYNAMIC_STATE_SCISSOR
+		};
+
+		VkPipelineDynamicStateCreateInfo dynamicState{};
+		dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+		dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+		dynamicState.pDynamicStates = dynamicStates.data();
+
+		//因为我们之前在顶点着色器中没有使用任何顶点输入，所以我们将其设置为  nullptr 。
+		VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+		vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+		//绑定：数据之间的间距以及数据是按顶点还是按实例（参见实例化）
+		vertexInputInfo.vertexBindingDescriptionCount = 0;
+		vertexInputInfo.pVertexBindingDescriptions = nullptr; // Optional
+		//属性描述：传递给顶点着色器的属性类型、从哪个绑定加载它们以及偏移量是多少
+		vertexInputInfo.vertexAttributeDescriptionCount = 0;
+		vertexInputInfo.pVertexAttributeDescriptions = nullptr; // Optional
+
+		//输入装配状态
+		VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+		inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+		inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+		//视口和剪裁
+		VkViewport viewport{};
+		viewport.x = 0.0f;
+		viewport.y = 0.0f;
+		viewport.width = (float)swapChainExtent.width;
+		viewport.height = (float)swapChainExtent.height;
+		//指定视口的最小和最大深度范围,其值范围为 0.0 到 1.0。
+		viewport.minDepth = 0.0f;
+		viewport.maxDepth = 1.0f;
+
+		//创建剪裁矩形
+		VkRect2D scissor{};
+		scissor.offset = { 0, 0 };
+		scissor.extent = swapChainExtent;
+		
+		//指定视口和剪裁矩形
+		VkPipelineViewportStateCreateInfo viewportState{};
+		viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+		viewportState.viewportCount = 1;
+		viewportState.scissorCount = 1;
+		viewportState.pViewports = &viewport;
+		viewportState.pScissors = &scissor;
+
+		//光栅化状态
+		VkPipelineRasterizationStateCreateInfo rasterizer{};
+		rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+		//如果启用深度夹紧，任何超出范围的片段都将被丢弃，而不是在深度缓冲区中写入无效值。
+		//这对于实现后期处理效果很有用，例如模糊或阴影映射。
+		rasterizer.depthClampEnable = VK_FALSE;
+		//如果被设置为  VK_TRUE ，那么几何图形永远不会被光栅化。实际上会禁用向帧缓冲区的写入。
+		rasterizer.rasterizerDiscardEnable = VK_FALSE;
+		//指定多边形的填充模式
+		/* VK_POLYGON_MODE_FILL  表示填充多边形，
+		VK_POLYGON_MODE_LINE  表示绘制多边形的边界，
+		VK_POLYGON_MODE_POINT  表示绘制多边形的顶点。
+		除了填充模式之外，其他任何模式都需要启用GPU特性。
+		*/ 
+		rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+
+		//指定多边形的线宽，任何粗于 1.0 的线宽都需要启用 GPU 特性。
+		rasterizer.lineWidth = 1.0f;
+
+		//决定了要使用的面剔除模式，可以使用的值有：
+		//VK_CULL_MODE_NONE：不剔除任何面
+		//VK_CULL_MODE_FRONT_BIT：剔除前面
+		//VK_CULL_MODE_BACK_BIT：剔除背面
+		//VK_CULL_MODE_FRONT_AND_BACK：剔除前后面
+		//VK_CULL_MODE_FRONT_AND_BACK  是最常用的值，因为它可以提高性能并减少不必要的片段着色器调用。
+		rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+		//指定多边形的前面是顺时针还是逆时针
+		rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+
+		//指定多边形的深度偏移量
+		/*光栅化器可以通过添加一个常量值或根据片段的斜率对其进行偏移来改变深度值。
+		这有时用于阴影映射，但我们不会使用它。只需将depthBiasEnable设置为VK_FALSE即可。*/
+		rasterizer.depthBiasEnable = VK_FALSE;
+		rasterizer.depthBiasConstantFactor = 0.0f; // Optional
+		rasterizer.depthBiasClamp = 0.0f; // Optional
+		rasterizer.depthBiasSlopeFactor = 0.0f; // Optional
+
+		//多重采样,一般用来消除锯齿。暂时不使用
+		VkPipelineMultisampleStateCreateInfo multisampling{};
+		multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+		multisampling.sampleShadingEnable = VK_FALSE;
+		multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+		multisampling.minSampleShading = 1.0f; // Optional
+		multisampling.pSampleMask = nullptr; // Optional
+		multisampling.alphaToCoverageEnable = VK_FALSE; // Optional
+		multisampling.alphaToOneEnable = VK_FALSE; // Optional
+
+		//深度和模板测试
+		//VkPipelineDepthStencilStateCreateInfo
+
+		//颜色混合状态
+		VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+		colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+		//colorBlendAttachment.blendEnable = VK_FALSE;
+		//colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE; // Optional
+		//colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
+		//colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD; // Optional
+		//colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; // Optional
+		//colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
+		//colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD; // Optional
+
+		//启用混合，并且按照alpha通道进行混合
+		colorBlendAttachment.blendEnable = VK_TRUE;
+		colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+		colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+		colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+		colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+		colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+		colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+		VkPipelineColorBlendStateCreateInfo colorBlending{};
+		colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+		//指定是否启用逻辑操作，如果启用，则默认禁用混合
+		colorBlending.logicOpEnable = VK_FALSE;
+		colorBlending.logicOp = VK_LOGIC_OP_COPY; // Optional
+		colorBlending.attachmentCount = 1;
+		colorBlending.pAttachments = &colorBlendAttachment;
+		colorBlending.blendConstants[0] = 0.0f; // Optional
+		colorBlending.blendConstants[1] = 0.0f; // Optional
+		colorBlending.blendConstants[2] = 0.0f; // Optional
+		colorBlending.blendConstants[3] = 0.0f; // Optional
+
+		//管线布局
+		VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+		pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+		pipelineLayoutInfo.setLayoutCount = 0; // Optional
+		pipelineLayoutInfo.pSetLayouts = nullptr; // Optional
+		pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
+		pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
+
+		if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create pipeline layout!");
+		}
+
+		//管线创建信息
+		VkGraphicsPipelineCreateInfo pipelineInfo{};
+		pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+		pipelineInfo.stageCount = 2;
+		pipelineInfo.pStages = shaderStages;
+	
+		pipelineInfo.pVertexInputState = &vertexInputInfo;
+		pipelineInfo.pInputAssemblyState = &inputAssembly;
+		pipelineInfo.pViewportState = &viewportState;
+		pipelineInfo.pRasterizationState = &rasterizer;
+		pipelineInfo.pMultisampleState = &multisampling;
+		pipelineInfo.pDepthStencilState = nullptr; // Optional
+		pipelineInfo.pColorBlendState = &colorBlending;
+		pipelineInfo.pDynamicState = &dynamicState;
+		//指定管线布局
+		pipelineInfo.layout = pipelineLayout;
+		//指定渲染通道
+		pipelineInfo.renderPass = renderPass;
+		pipelineInfo.subpass = 0;
+
+		/*此管线也可以与其他渲染通道配合使用，但这里我们不使用该功能*/
+		pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
+		pipelineInfo.basePipelineIndex = -1; // Optional
+
+		if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create graphics pipeline!");
+		}
+
+		vkDestroyShaderModule(device, fragShaderModule, nullptr);
+		vkDestroyShaderModule(device, vertShaderModule, nullptr);
+	}
+
+	//创建着色器模块
+	VkShaderModule createShaderModule(const std::vector<char>& code) {
+		VkShaderModuleCreateInfo createInfo{};
+		createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+		createInfo.codeSize = code.size();
+		//vector默认满足对齐要求，所以可以直接转换为uint32_t*
+		createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+		VkShaderModule shaderModule;
+		if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create shader module!");
+		}
+		return shaderModule;
+	}
+
+
+	//创建图像视图
+	void createImageViews() {
+		swapChainImageViews.resize(swapChainImages.size());
+
+		for (size_t i = 0; i < swapChainImages.size(); i++) {
+			VkImageViewCreateInfo createInfo{};
+			createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+			createInfo.image = swapChainImages[i];
+
+			/*viewType  和  format  字段指定了应如何解释图像数据。
+			viewType  参数允许您将图像视为 1D 纹理、2D 纹理、3D 纹理和立方体映射。*/
+			createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+			createInfo.format = swapChainImageFormat;
+			//指定图像的组件格式
+			/*“ components ”字段允许您交换颜色通道。例如，您可以将所有通道都映射到红色通道以生成单色纹理。
+			您还可以将常量值 0 和 1 映射到某个通道。在我们的例子中，我们将使用默认映射。*/
+			createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+			createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+			createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+			createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+			//指定图像的子资源范围
+			/*“ subresourceRange ”字段描述了图像的用途以及应访问图像的哪一部分。
+			我们的图像将用作颜色目标，不包含任何 Mip 映射级别或多个图层。*/
+			createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			createInfo.subresourceRange.baseMipLevel = 0;
+			createInfo.subresourceRange.levelCount = 1;
+			createInfo.subresourceRange.baseArrayLayer = 0;
+			createInfo.subresourceRange.layerCount = 1;
+
+			if (vkCreateImageView(device, &createInfo, nullptr, &swapChainImageViews[i]) != VK_SUCCESS) {
+				throw std::runtime_error("failed to create image views!");
+			}
+
+		}
+		/*如果您正在开发一个立体 3D 应用程序，那么您会创建一个具有多个层的交换链。
+		然后，您可以为每个图像创建多个图像视图，分别代表左眼和右眼的视图，通过访问不同的层来实现。*/
+
+	}
+
 
 	//创建交换链
 	void createSwapChain() {
@@ -457,25 +828,32 @@ private:
 	}
 
 	//创建调试工具
-	VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger) {
-		//获取函数指针
-		auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
-		if (func != nullptr) {
-			return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
-		}
-		else {
-			return VK_ERROR_EXTENSION_NOT_PRESENT;
-		}
+	VkResult CreateDebugUtilsMessengerEXT(
+		VkInstance instance, 
+		const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, 
+		const VkAllocationCallbacks* pAllocator, 
+		VkDebugUtilsMessengerEXT* pDebugMessenger) {
+			//获取函数指针
+			auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+			if (func != nullptr) {
+				return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
+			}
+			else {
+				return VK_ERROR_EXTENSION_NOT_PRESENT;
+			}
 	}
 
 
 	//销毁调试工具
-	static void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator) {
-		//获取函数指针
-		auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
-		if (func != nullptr) {
-			func(instance, debugMessenger, pAllocator);
-		}
+	static void DestroyDebugUtilsMessengerEXT(
+		VkInstance instance, 
+		VkDebugUtilsMessengerEXT debugMessenger, 
+		const VkAllocationCallbacks* pAllocator) {
+			//获取函数指针
+			auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+			if (func != nullptr) {
+				func(instance, debugMessenger, pAllocator);
+			}
 	}
 
 
@@ -490,9 +868,20 @@ private:
 	}
 
 
-	//清理内存
+	//清理内存,顺序不能错
 	void cleanup() {
+		//销毁交换链图像视图
+		for (auto imageView : swapChainImageViews) {
+			vkDestroyImageView(device, imageView, nullptr);
+		}
+		vkDestroyPipeline(device, graphicsPipeline, nullptr);
+		//销毁管线
+		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+		//销毁管线
+		vkDestroyRenderPass(device, renderPass, nullptr);
+		//销毁交换链
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
+		//销毁逻辑设备
 		vkDestroyDevice(device, nullptr);
 		if (enableValidationLayers) {
 			//销毁调试工具
@@ -573,48 +962,29 @@ private:
 		return extensions;
 	}
 
-	
-
 /*
 第一个参数指定了消息的严重程度，它是以下标志之一：
-VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT: Diagnostic message
-诊断消息
-VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT: Informational message like the creation of a resource
- VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT ：诸如创建资源之类的信息性消息
-VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT: Message about behavior that is not necessarily an error, but very likely a bug in your application
- VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ：关于行为的消息，这不一定是个错误，但很可能是您应用程序中的一个漏洞。
-VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT: Message about behavior that is invalid and may cause crashes
-有关无效行为的消息，该行为可能导致崩溃
-The values of this enumeration are set up in such a way that you can use a comparison operation to check if a message is equal or worse compared to some level of severity, for example:
+VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT:诊断消息
+VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT:诸如创建资源之类的信息性消息
+VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT: 关于行为的消息，这不一定是个错误，但很可能是您应用程序中的一个漏洞。
+VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT: 有关无效行为的消息，该行为可能导致崩溃
 此枚举的值设置方式使得您可以使用比较操作来检查消息是否等于或低于某个严重级别，例如：
 if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
     // Message is important enough to show
 }
-
-The messageType parameter can have the following values:
  messageType  参数可以具有以下值：
+VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT: 发生了一些与规格或性能无关的事件。
+VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT: 发生了违反规范或可能表明出错的情况。
+VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT: 潜在的非最优 Vulkan 使用情况
 
-VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT: Some event has happened that is unrelated to the specification or performance
-发生了一些与规格或性能无关的事件。
-VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT: Something has happened that violates the specification or indicates a possible mistake
-发生了违反规范或可能表明出错的情况。
-VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT: Potential non-optimal use of Vulkan
- VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT ：潜在的非最优 Vulkan 使用情况
-
-The pCallbackData parameter refers to a VkDebugUtilsMessengerCallbackDataEXT struct containing the details of the message itself, with the most important members being:
  pCallbackData  参数指的是一个  VkDebugUtilsMessengerCallbackDataEXT  结构体，其中包含消息本身的详细信息，最重要的成员有：
-
-pMessage: The debug message as a null-terminated string
-调试消息作为以空字符结尾的字符串
-pObjects: Array of Vulkan object handles related to the message
+pMessage: 调试消息作为以空字符结尾的字符串
  pObjects ：与消息相关的 Vulkan 对象句柄数组
-objectCount: Number of objects in array
-数组中的对象数量
-Finally, the pUserData parameter contains a pointer that was specified during the setup of the callback and allows you to pass your own data to it.
+objectCount: 数组中的对象数量
 最后， pUserData  参数包含一个指针，该指针是在设置回调函数时指定的，允许您向回调函数传递自己的数据。
 
-The callback returns a boolean that indicates if the Vulkan call that triggered the validation layer message should be aborted. If the callback returns true, then the call is aborted with the VK_ERROR_VALIDATION_FAILED_EXT error. This is normally only used to test the validation layers themselves, so you should always return VK_FALSE.
-回调函数会返回一个布尔值，该值表明触发验证层消息的 Vulkan 调用是否应被中止。如果回调函数返回 true，则该调用将被中止，并返回  VK_ERROR_VALIDATION_FAILED_EXT  错误。这 通常仅用于测试验证层本身，因此您应始终返回  VK_FALSE
+回调函数会返回一个布尔值，该值表明触发验证层消息的Vulkan 调用是否应被中止。如果回调函数返回 true，则该调用将被中止，并返回VK_ERROR_VALIDATION_FAILED_EXT错误。
+这通常仅用于测试验证层本身，因此您应始终返回VK_FALSE
 */
 	static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 		VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
