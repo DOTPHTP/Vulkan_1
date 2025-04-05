@@ -16,6 +16,11 @@
 #include <limits> // Necessary for std::numeric_limits
 #include <algorithm> // Necessary for std::clamp
 #include <fstream>
+#include <string>
+
+//定义同时使用的最大帧数
+const int MAX_FRAMES_IN_FLIGHT = 2;
+
 class HelloTriangleApplication {
 public:
 	void run() {
@@ -72,13 +77,16 @@ private:
 	//调试回调函数
 	VkDebugUtilsMessengerEXT debugMessenger;
 
+	//当前使用的帧索引
+	uint32_t currentFrame = 0;
+
 	//显示器抽象
 	VkSurfaceKHR surface;
 
 	//命令
 	VkCommandPool commandPool;
 	//将在命令池被销毁时自动销毁
-	VkCommandBuffer commandBuffer;
+	std::vector<VkCommandBuffer> commandBuffers;
 
 	//验证层
 	const std::vector<const char*> validationLayers = {
@@ -122,9 +130,11 @@ private:
 	std::vector<VkFramebuffer> swapChainFramebuffers;
 
 	//同步对象
-	VkSemaphore imageAvailableSemaphore;
-	VkSemaphore renderFinishedSemaphore;
-	VkFence inFlightFence;
+	std::vector<VkSemaphore> imageAvailableSemaphores;
+	std::vector<VkSemaphore> renderFinishedSemaphores;
+	std::vector<VkFence> inFlightFences;
+	//标记
+	bool framebufferResized = false;
 
 	//图形管线
 	VkRenderPass renderPass;
@@ -152,9 +162,9 @@ private:
 
 	void drawFrame() {
 		//等待命令缓冲可用，可接受一个栅栏数组，第三个参数指定等待的栅栏数量（任一或者全部），第四个参数指定等待的时间
-		vkWaitForFences(device, 1, &inFlightFence, VK_TRUE, UINT64_MAX);
-		//手动重置栅栏
-		vkResetFences(device, 1, &inFlightFence);
+		vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+		
+		
 		//获取交换链图像索引
 		uint32_t imageIndex;
 		/* vkAcquireNextImageKHR ` 的前两个参数是逻辑设备和我们希望从中获取图像的交换链。
@@ -164,21 +174,32 @@ private:
 		用我们的  imageAvailableSemaphore  。最后一个参数指定了一个变量，用于输出已变为可用状态的交
 		换链图像的索引。该索引指的是我们  swapChainImages  数组中的  VkImage  。
 		我们将使用该索引来选取VkFrameBuffer。*/
-		vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
-		
-		vkResetCommandBuffer(commandBuffer, 0);
+		//查看交换链是否适配，如果不适配则重新创建交换链
+		VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
 
-		recordCommandBuffer(commandBuffer, imageIndex);
+		if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+			recreateSwapChain();
+			return;
+		}
+		else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+			throw std::runtime_error("failed to acquire swap chain image!");
+		}
+
+		//手动重置栅栏
+		vkResetFences(device, 1, &inFlightFences[currentFrame]);
+
+		vkResetCommandBuffer(commandBuffers[currentFrame], 0);
+		recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
 
 		//提交命令缓冲区
 		VkSubmitInfo submitInfo{};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
+		
 		//前三个参数指定了在执行开始前要等待哪些信号量以及在图形管线的哪个（些）阶段进行等待。
 		// 我们希望在图像可用之前不要将颜色写入图像，因此我们指定了图形管线中写入颜色附件的阶段。
 		// 这意味着理论上，在图像尚未可用时，实现可以已经开始执行我们的顶点着色器等操作。 
 		// waitStages  数组中的每个条目都对应于  pWaitSemaphores  中具有相同索引的信号量。
-		VkSemaphore waitSemaphores[] = { imageAvailableSemaphore };
+		VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
 		VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 		submitInfo.waitSemaphoreCount = 1;
 		submitInfo.pWaitSemaphores = waitSemaphores;
@@ -186,14 +207,14 @@ private:
 
 		//指定要执行的命令缓冲区
 		submitInfo.commandBufferCount = 1;
-		submitInfo.pCommandBuffers = &commandBuffer;
+		submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
 
-		//指定要发出信号的信号量,我们将使用 renderFinishedSemaphore 信号量来表示图像已准备好进行呈现。
-		VkSemaphore signalSemaphores[] = { renderFinishedSemaphore };
+		//指定要发出信号的信号量
+		VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
 		submitInfo.signalSemaphoreCount = 1;
 		submitInfo.pSignalSemaphores = signalSemaphores;
 
-		if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFence) != VK_SUCCESS) {
+		if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
 			throw std::runtime_error("failed to submit draw command buffer!");
 		}
 
@@ -208,25 +229,75 @@ private:
 		presentInfo.pSwapchains = swapChains;
 		presentInfo.pImageIndices = &imageIndex;
 		presentInfo.pResults = nullptr; // Optional
-		//提交交换链图像
-		vkQueuePresentKHR(presentQueue, &presentInfo);
 
+
+
+
+		//提交交换链图像
+		result = vkQueuePresentKHR(presentQueue, &presentInfo);
+
+		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized) {
+			framebufferResized = false;
+			recreateSwapChain();
+		}
+		else if (result != VK_SUCCESS) {
+			throw std::runtime_error("failed to present swap chain image!");
+		}
+
+		//切换到下一个帧
+		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+	}
+
+	//在某些情况下，您可能需要重新创建交换链，例如，当窗口大小发生变化时。
+	void recreateSwapChain() {
+		int width = 0, height = 0;
+		glfwGetFramebufferSize(window, &width, &height);
+		//如果窗口的宽度或高度为0，则等待窗口大小发生变化
+		while (width == 0 || height == 0) {
+			glfwGetFramebufferSize(window, &width, &height);
+			glfwWaitEvents();
+		}
+
+		vkDeviceWaitIdle(device);
+		cleanupSwapChain();
+		createSwapChain();
+		createImageViews();
+		createFramebuffers();
+	}
+
+	void cleanupSwapChain() {
+		for (size_t i = 0; i < swapChainFramebuffers.size(); i++) {
+			vkDestroyFramebuffer(device, swapChainFramebuffers[i], nullptr);
+		}
+
+		for (size_t i = 0; i < swapChainImageViews.size(); i++) {
+			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
+		}
+
+		vkDestroySwapchainKHR(device, swapChain, nullptr);
 	}
 
 	//创建同步对象
 	void createSyncObjects() {
+		imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+		renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+		inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+
 		VkSemaphoreCreateInfo semaphoreInfo{};
 		semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
+
 		VkFenceCreateInfo fenceInfo{};
 		fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-		//指定栅栏的状态,我们将使用 VK_FENCE_CREATE_SIGNALED_BIT 标志来指定栅栏的初始状态为已发出信号。
 		fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-		if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphore) != VK_SUCCESS ||
-			vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphore) != VK_SUCCESS ||
-			vkCreateFence(device, &fenceInfo, nullptr, &inFlightFence) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create semaphores!");
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
+				vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
+				vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
+
+				throw std::runtime_error("failed to create synchronization objects for a frame!");
+			}
 		}
 	}
 
@@ -236,10 +307,17 @@ private:
 		glfwInit();
 		//不创建opengl上下文
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-		//不可调整窗口大小
-		glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+		
 		//创建窗口,前三个参数分别指定窗口的宽度、高度和标题。 第四个参数允许您选择性地指定要打开窗口的显示器，最后一个参数仅与 OpenGL 相关。
 		window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+		glfwSetWindowUserPointer(window, this);
+		glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+
+	}
+
+	static void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
+		auto app = reinterpret_cast<HelloTriangleApplication*>(glfwGetWindowUserPointer(window));
+		app->framebufferResized = true;
 	}
 
 	//初始化
@@ -255,22 +333,25 @@ private:
 		createGraphicsPipeline();
 		createFramebuffers();
 		createCommandPool();
-		createCommandBuffer();
+		createCommandBuffers();
 		createSyncObjects();
 	}
 
 	//创建命令缓冲区
-	void createCommandBuffer() {
+	void createCommandBuffers() {
+
+		commandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+
 		VkCommandBufferAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 		allocInfo.commandPool = commandPool;
 		//指定命令缓冲区的级别,我们将使用 VK_COMMAND_BUFFER_LEVEL_PRIMARY 级别的命令缓冲区。
 		//主命令缓冲区可以直接提交到队列，而二级命令缓冲区只能由主命令缓冲区调用。VK_COMMAND_BUFFER_LEVEL_SECONDARY
 		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		//指定命令缓冲区的数量,我们只需要一个命令缓冲区
-		allocInfo.commandBufferCount = 1;
+		//指定命令缓冲区的数量
+		allocInfo.commandBufferCount = (uint32_t)commandBuffers.size();
 
-		if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
+		if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data()) != VK_SUCCESS) {
 			throw std::runtime_error("failed to allocate command buffers!");
 		}
 	}
@@ -1125,27 +1206,24 @@ private:
 	//清理内存,顺序不能错
 	void cleanup() {
 		//销毁同步对象
-		vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
-		vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
-		vkDestroyFence(device, inFlightFence, nullptr);
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+			vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+			vkDestroyFence(device, inFlightFences[i], nullptr);
+		}
 
-		//销毁命令池
-		vkDestroyCommandPool(device, commandPool, nullptr);
-		//销毁帧缓冲，必须在销毁交换链之前销毁
-		for (auto framebuffer : swapChainFramebuffers) {
-			vkDestroyFramebuffer(device, framebuffer, nullptr);
-		}
-		//销毁交换链图像视图
-		for (auto imageView : swapChainImageViews) {
-			vkDestroyImageView(device, imageView, nullptr);
-		}
+		
+		//销毁交换链
+		cleanupSwapChain();
+
 		vkDestroyPipeline(device, graphicsPipeline, nullptr);
 		//销毁管线
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		//销毁管线
 		vkDestroyRenderPass(device, renderPass, nullptr);
-		//销毁交换链
-		vkDestroySwapchainKHR(device, swapChain, nullptr);
+		
+		//销毁命令池
+		vkDestroyCommandPool(device, commandPool, nullptr);
 		//销毁逻辑设备
 		vkDestroyDevice(device, nullptr);
 		if (enableValidationLayers) {
