@@ -51,12 +51,18 @@ struct Vertex {
 	}
 
 };
-//顶点数据,我们将使用一个三角形来测试渲染管线
+//顶点数据,我们将使用一个矩形来测试渲染管线
 const std::vector<Vertex> vertices = {
-	{{0.0f, -0.5f}, {1.0f, 1.0f, 1.0f}},
-	{{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-	{{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+	{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+	{{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+	{{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+	{{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
 };
+//顶点索引
+const std::vector<uint32_t> indices = {
+	0, 1, 2, 2, 3, 0
+};
+
 
 class HelloTriangleApplication {
 public:
@@ -120,6 +126,8 @@ private:
 	//顶点缓冲区
 	VkBuffer vertexBuffer;
 	VkDeviceMemory vertexBufferMemory;
+	VkBuffer indexBuffer;
+	VkDeviceMemory indexBufferMemory;
 	//显示器抽象
 	VkSurfaceKHR surface;
 
@@ -374,6 +382,7 @@ private:
 		createFramebuffers();
 		createCommandPool();
 		createVertexBuffer();
+		createIndexBuffer();
 		createCommandBuffers();
 		createSyncObjects();
 	}
@@ -446,6 +455,7 @@ private:
 		vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 	}
 
+	//创建顶点缓冲区
 	void createVertexBuffer() {
 		VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
 		VkBuffer stagingBuffer;
@@ -467,6 +477,27 @@ private:
 		 vkDestroyBuffer(device, stagingBuffer, nullptr);
 		 vkFreeMemory(device, stagingBufferMemory, nullptr);
 
+	}
+
+	//创建索引缓冲区
+	void createIndexBuffer() {
+		VkDeviceSize bufferSize = sizeof(indices[0]) * indices.size();
+
+		VkBuffer stagingBuffer;
+		VkDeviceMemory stagingBufferMemory;
+		createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+
+		void* data;
+		vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);
+		memcpy(data, indices.data(), (size_t)bufferSize);
+		vkUnmapMemory(device, stagingBufferMemory);
+
+		createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, indexBuffer, indexBufferMemory);
+
+		copyBuffer(stagingBuffer, indexBuffer, bufferSize);
+
+		vkDestroyBuffer(device, stagingBuffer, nullptr);
+		vkFreeMemory(device, stagingBufferMemory, nullptr);
 	}
 
 	//找到合适的内存类型
@@ -550,7 +581,7 @@ private:
 		VkDeviceSize offsets[] = { 0 };
 		vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
 
-
+		vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 		//动态设置视口和剪裁矩形
 		VkViewport viewport{};
 		viewport.x = 0.0f;
@@ -569,19 +600,21 @@ private:
 		//绘制命令
 		/*实际的  vkCmdDraw  函数有点令人失望，但因为它非常简单，所以才这样，这得益于我们提前指定的所有信息。
 		除了命令缓冲区之外，它还有以下参数：
-		vertexCount: 尽管我们没有顶点缓冲区，但从技术上讲，我们仍然有 3 个顶点要绘制。
+		vertexCount: 
 		instanceCount: 用于实例化渲染，如果不是这种情况请使用1
 		firstVertex: 用作顶点缓冲区的偏移量，定义了  gl_VertexIndex  的最小值。
 		firstInstance: 用作实例渲染的偏移量，定义了  gl_InstanceIndex  的最小值。*/
-		vkCmdDraw(commandBuffer, static_cast<uint32_t>(vertices.size()), 1, 0, 0);
-		//vkCmdDrawIndexed: 用于索引绘制,我们没有使用索引缓冲区，所以我们不需要使用它
-		//vkCmdDrawIndirect: 用于间接绘制,我们没有使用间接绘制，所以我们不需要使用它
-		//vkCmdDrawIndexedIndirect: 用于间接索引绘制,我们没有使用间接索引绘制，所以我们不需要使用它
-		//vkCmdDrawIndirectCount: 用于间接绘制计数,我们没有使用间接绘制计数，所以我们不需要使用它
-		//vkCmdDrawIndexedIndirectCount: 用于间接索引绘制计数,我们没有使用间接索引绘制计数，所以我们不需要使用它
-		//vkCmdDrawMeshTasksNV: 用于网格任务绘制,我们没有使用网格任务绘制，所以我们不需要使用它
-		//vkCmdDrawMeshTasksIndirectNV: 用于间接网格任务绘制,我们没有使用间接网格任务绘制，所以我们不需要使用它
-		//vkCmdDrawMeshTasksIndirectCountNV: 用于间接网格任务绘制计数,我们没有使用间接网格任务绘制计数，所以我们不需要使用它
+		//vkCmdDraw(commandBuffer, static_cast<uint32_t>(vertices.size()), 1, 0, 0);
+
+		vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+		//vkCmdDrawIndexed: 用于索引绘制,
+		//vkCmdDrawIndirect: 用于间接绘制,
+		//vkCmdDrawIndexedIndirect: 用于间接索引绘制,
+		//vkCmdDrawIndirectCount: 用于间接绘制计数,
+		//vkCmdDrawIndexedIndirectCount: 用于间接索引绘制计数,
+		//vkCmdDrawMeshTasksNV: 用于网格任务绘制,
+		//vkCmdDrawMeshTasksIndirectNV: 用于间接网格任务绘制,
+		//vkCmdDrawMeshTasksIndirectCountNV: 用于间接网格任务绘制计数,
 		
 		vkCmdEndRenderPass(commandBuffer);
 
@@ -1368,6 +1401,11 @@ private:
 		
 		//销毁交换链
 		cleanupSwapChain();
+
+		//销毁索引缓冲区
+		vkDestroyBuffer(device, indexBuffer, nullptr);
+		vkFreeMemory(device, indexBufferMemory, nullptr);
+
 		//销毁顶点缓冲区
 		vkDestroyBuffer(device, vertexBuffer, nullptr);
 		vkFreeMemory(device, vertexBufferMemory, nullptr);
