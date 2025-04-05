@@ -75,7 +75,10 @@ private:
 	//显示器抽象
 	VkSurfaceKHR surface;
 
-
+	//命令
+	VkCommandPool commandPool;
+	//将在命令池被销毁时自动销毁
+	VkCommandBuffer commandBuffer;
 
 	//验证层
 	const std::vector<const char*> validationLayers = {
@@ -116,6 +119,8 @@ private:
 	};
 
 	std::vector<VkImageView> swapChainImageViews;
+	std::vector<VkFramebuffer> swapChainFramebuffers;
+
 
 	//图形管线
 	VkRenderPass renderPass;
@@ -151,6 +156,150 @@ private:
 		createImageViews();
 		createRenderPass();
 		createGraphicsPipeline();
+		createFramebuffers();
+		createCommandPool();
+		createCommandBuffer();
+	}
+
+	//创建命令缓冲区
+	void createCommandBuffer() {
+		VkCommandBufferAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		allocInfo.commandPool = commandPool;
+		//指定命令缓冲区的级别,我们将使用 VK_COMMAND_BUFFER_LEVEL_PRIMARY 级别的命令缓冲区。
+		//主命令缓冲区可以直接提交到队列，而二级命令缓冲区只能由主命令缓冲区调用。VK_COMMAND_BUFFER_LEVEL_SECONDARY
+		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		//指定命令缓冲区的数量,我们只需要一个命令缓冲区
+		allocInfo.commandBufferCount = 1;
+
+		if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
+			throw std::runtime_error("failed to allocate command buffers!");
+		}
+	}
+
+	//将命令写入命令缓冲区，以及想要写入的图像索引
+	void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+		VkCommandBufferBeginInfo beginInfo{};
+		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		//指定命令缓冲区的使用方式,
+		// 我们可以使用VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT标志来允许命令缓冲区在多个队列上同时使用。
+		//或者我们可以使用VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT标志来指定命令缓冲区只会被提交一次。
+		//VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT: 这是一个辅助命令缓冲区，它将完全处于单个渲染通道内。
+		//目前来说我们都不用到
+		beginInfo.flags = 0; // Optional
+		//只对二级命令缓冲区有用
+		beginInfo.pInheritanceInfo = nullptr; // Optional
+
+		if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+			throw std::runtime_error("failed to begin recording command buffer!");
+		}
+
+		//开始渲染通道
+		VkRenderPassBeginInfo renderPassInfo{};
+		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		renderPassInfo.renderPass = renderPass;
+		renderPassInfo.framebuffer = swapChainFramebuffers[imageIndex];
+
+		//指定渲染区域,我们将使用交换链图像的大小来获得最佳效果
+		renderPassInfo.renderArea.offset = { 0, 0 };
+		renderPassInfo.renderArea.extent = swapChainExtent;
+
+		//指定清除值,我们将使用黑色作为清除颜色
+		VkClearValue clearColor = { {{0.0f, 0.0f, 0.0f, 1.0f}} };
+		renderPassInfo.clearValueCount = 1;
+		renderPassInfo.pClearValues = &clearColor;
+
+		//提交命令缓冲区，vkCmd*函数返回值都是void类型，所以我们不需要检查返回值
+		//第三个参数指定子通道的内容,我们将使用 VK_SUBPASS_CONTENTS_INLINE 来指定命令缓冲区的内容
+		//VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS: 该子通道的内容是二级命令缓冲区
+		vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+		//绑定图形管线，第二个参数指定管线绑定点,我们将使用 VK_PIPELINE_BIND_POINT_GRAPHICS 来指定图形管线
+		//VK_PIPELINE_BIND_POINT_COMPUTE: 计算管线绑定点
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+
+		//动态设置视口和剪裁矩形
+		VkViewport viewport{};
+		viewport.x = 0.0f;
+		viewport.y = 0.0f;
+		viewport.width = static_cast<float>(swapChainExtent.width);
+		viewport.height = static_cast<float>(swapChainExtent.height);
+		viewport.minDepth = 0.0f;
+		viewport.maxDepth = 1.0f;
+		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+		VkRect2D scissor{};
+		scissor.offset = { 0, 0 };
+		scissor.extent = swapChainExtent;
+		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+		//绘制命令
+		/*实际的  vkCmdDraw  函数有点令人失望，但因为它非常简单，所以才这样，这得益于我们提前指定的所有信息。
+		除了命令缓冲区之外，它还有以下参数：
+		vertexCount: 尽管我们没有顶点缓冲区，但从技术上讲，我们仍然有 3 个顶点要绘制。
+		instanceCount: 用于实例化渲染，如果不是这种情况请使用1
+		firstVertex: 用作顶点缓冲区的偏移量，定义了  gl_VertexIndex  的最小值。
+		firstInstance: 用作实例渲染的偏移量，定义了  gl_InstanceIndex  的最小值。*/
+		vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+		//vkCmdDrawIndexed: 用于索引绘制,我们没有使用索引缓冲区，所以我们不需要使用它
+		//vkCmdDrawIndirect: 用于间接绘制,我们没有使用间接绘制，所以我们不需要使用它
+		//vkCmdDrawIndexedIndirect: 用于间接索引绘制,我们没有使用间接索引绘制，所以我们不需要使用它
+		//vkCmdDrawIndirectCount: 用于间接绘制计数,我们没有使用间接绘制计数，所以我们不需要使用它
+		//vkCmdDrawIndexedIndirectCount: 用于间接索引绘制计数,我们没有使用间接索引绘制计数，所以我们不需要使用它
+		//vkCmdDrawMeshTasksNV: 用于网格任务绘制,我们没有使用网格任务绘制，所以我们不需要使用它
+		//vkCmdDrawMeshTasksIndirectNV: 用于间接网格任务绘制,我们没有使用间接网格任务绘制，所以我们不需要使用它
+		//vkCmdDrawMeshTasksIndirectCountNV: 用于间接网格任务绘制计数,我们没有使用间接网格任务绘制计数，所以我们不需要使用它
+		
+		vkCmdEndRenderPass(commandBuffer);
+
+		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+			throw std::runtime_error("failed to record command buffer!");
+		}
+	}
+
+	//创建命令池
+	void createCommandPool() {
+		//获取队列族索引
+		QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+
+		VkCommandPoolCreateInfo poolInfo{};
+		poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+		//指定命令池的类型,我们将使用 VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+		// 标志来允许我们在命令缓冲区被提交后重用它们。
+		poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+		poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
+
+		if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create command pool!");
+		}
+
+
+	}
+
+	//创建帧缓冲区
+	void createFramebuffers() {
+		swapChainFramebuffers.resize(swapChainImageViews.size());
+
+		//遍历图像视图，创建帧缓冲区
+		for (size_t i = 0; i < swapChainImageViews.size(); i++) {
+			VkImageView attachments[] = {
+				swapChainImageViews[i]
+			};
+
+			VkFramebufferCreateInfo framebufferInfo{};
+			framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+			framebufferInfo.renderPass = renderPass;
+			framebufferInfo.attachmentCount = 1;
+			framebufferInfo.pAttachments = attachments;
+			framebufferInfo.width = swapChainExtent.width;
+			framebufferInfo.height = swapChainExtent.height;
+			//指定图像的层数,如果是立体视觉交换链，则为2（左右眼）
+			framebufferInfo.layers = 1;
+
+			if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &swapChainFramebuffers[i]) != VK_SUCCESS) {
+				throw std::runtime_error("failed to create framebuffer!");
+			}
+		}
 	}
 
 	//创建渲染通道
@@ -870,6 +1019,12 @@ private:
 
 	//清理内存,顺序不能错
 	void cleanup() {
+		//销毁命令池
+		vkDestroyCommandPool(device, commandPool, nullptr);
+		//销毁帧缓冲，必须在销毁交换链之前销毁
+		for (auto framebuffer : swapChainFramebuffers) {
+			vkDestroyFramebuffer(device, framebuffer, nullptr);
+		}
 		//销毁交换链图像视图
 		for (auto imageView : swapChainImageViews) {
 			vkDestroyImageView(device, imageView, nullptr);
