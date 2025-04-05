@@ -2,8 +2,6 @@
 #include <GLFW/glfw3.h>
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
-#include <glm/vec4.hpp>
-#include <glm/mat4x4.hpp>
 #include <iostream>
 #include <cstdlib>
 #include <stdexcept>
@@ -17,9 +15,48 @@
 #include <algorithm> // Necessary for std::clamp
 #include <fstream>
 #include <string>
-
+#include <glm/glm.hpp>
+#include <array>
 //定义同时使用的最大帧数
 const int MAX_FRAMES_IN_FLIGHT = 2;
+
+struct Vertex {
+	glm::vec2 pos;
+	glm::vec3 color;
+	//指定顶点输入约束性属性描述
+	static VkVertexInputBindingDescription getBindingDescription() {
+		VkVertexInputBindingDescription bindingDescription{};
+		bindingDescription.binding = 0;
+		//指定顶点输入属性的偏移量,我们将使用 sizeof(Vertex) 来指定偏移量
+		bindingDescription.stride = sizeof(Vertex);
+		//这里可以使用实例化渲染，但是我们不需要，所以我们将其设置为 VK_VERTEX_INPUT_RATE_VERTEX
+		bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+		return bindingDescription;
+	}
+
+	//指定顶点输入属性描述
+	static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions() {
+		std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+		attributeDescriptions[0].binding = 0;
+		attributeDescriptions[0].location = 0;
+		attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+		attributeDescriptions[0].offset = offsetof(Vertex, pos);
+
+		attributeDescriptions[1].binding = 0;
+		attributeDescriptions[1].location = 1;
+		attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attributeDescriptions[1].offset = offsetof(Vertex, color);
+
+		return attributeDescriptions;
+	}
+
+};
+//顶点数据,我们将使用一个三角形来测试渲染管线
+const std::vector<Vertex> vertices = {
+	{{0.0f, -0.5f}, {1.0f, 1.0f, 1.0f}},
+	{{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+	{{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+};
 
 class HelloTriangleApplication {
 public:
@@ -80,6 +117,9 @@ private:
 	//当前使用的帧索引
 	uint32_t currentFrame = 0;
 
+	//顶点缓冲区
+	VkBuffer vertexBuffer;
+	VkDeviceMemory vertexBufferMemory;
 	//显示器抽象
 	VkSurfaceKHR surface;
 
@@ -333,8 +373,117 @@ private:
 		createGraphicsPipeline();
 		createFramebuffers();
 		createCommandPool();
+		createVertexBuffer();
 		createCommandBuffers();
 		createSyncObjects();
+	}
+
+	//创建缓冲区
+	void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory) {
+		VkBufferCreateInfo bufferInfo{};
+		bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bufferInfo.size = size;
+		bufferInfo.usage = usage;
+		bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+		if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create buffer!");
+		}
+
+		VkMemoryRequirements memRequirements;
+		vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
+
+		VkMemoryAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memRequirements.size;
+		allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+
+		if (vkAllocateMemory(device, &allocInfo, nullptr, &bufferMemory) != VK_SUCCESS) {
+			throw std::runtime_error("failed to allocate buffer memory!");
+		}
+
+		vkBindBufferMemory(device, buffer, bufferMemory, 0);
+
+	}
+
+	//复制缓冲区
+	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
+		//使用临时命令缓冲区来复制缓冲区
+		VkCommandBufferAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		allocInfo.commandPool = commandPool;
+		allocInfo.commandBufferCount = 1;
+
+		VkCommandBuffer commandBuffer;
+		vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+		VkCommandBufferBeginInfo beginInfo{};
+		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		//指定命令缓冲区的使用方式,我们将使用 VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT 
+		// 标志来指定命令缓冲区只会被提交一次。
+		beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+		vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+		VkBufferCopy copyRegion{};
+		copyRegion.srcOffset = 0; // Optional
+		copyRegion.dstOffset = 0; // Optional
+		copyRegion.size = size;
+		//复制缓冲区,我们将使用 vkCmdCopyBuffer 函数来复制缓冲区
+		//第一个参数是命令缓冲区，第二个参数是源缓冲区，第三个参数是目标缓冲区
+		//第四个参数是复制区域的数量，我们将使用 1 来指定一个复制区域
+		//第五个参数是复制区域的指针，我们将使用 &copyRegion 来指定复制区域
+		vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+		vkEndCommandBuffer(commandBuffer);
+		VkSubmitInfo submitInfo{};
+		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		submitInfo.commandBufferCount = 1;
+		submitInfo.pCommandBuffers = &commandBuffer;
+
+		vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+		vkQueueWaitIdle(graphicsQueue);
+		vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+	}
+
+	void createVertexBuffer() {
+		VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+		VkBuffer stagingBuffer;
+		VkDeviceMemory stagingBufferMemory;
+		createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+		
+		//映射内存到应用程序地址空间
+		void* data;
+		vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);
+		//复制数据到内存
+		memcpy(data, vertices.data(), (size_t)bufferSize);
+		//取消映射内存
+		 vkUnmapMemory(device, stagingBufferMemory);
+
+		 createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertexBuffer, vertexBufferMemory);
+		 copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
+
+		 //销毁临时缓冲区
+		 vkDestroyBuffer(device, stagingBuffer, nullptr);
+		 vkFreeMemory(device, stagingBufferMemory, nullptr);
+
+	}
+
+	//找到合适的内存类型
+	uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+		VkPhysicalDeviceMemoryProperties memProperties;
+		vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+		//遍历内存类型，找到合适的内存类型。具体来说，我们需要找到一个内存类型，
+		// 它的类型索引与 typeFilter 相同，并且它的属性标志与 properties 相同。
+		for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+			if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+				return i;
+			}
+		}
+
+		throw std::runtime_error("failed to find suitable memory type!");
+
 	}
 
 	//创建命令缓冲区
@@ -397,6 +546,11 @@ private:
 		//VK_PIPELINE_BIND_POINT_COMPUTE: 计算管线绑定点
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
+		VkBuffer vertexBuffers[] = { vertexBuffer };
+		VkDeviceSize offsets[] = { 0 };
+		vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+
+
 		//动态设置视口和剪裁矩形
 		VkViewport viewport{};
 		viewport.x = 0.0f;
@@ -419,7 +573,7 @@ private:
 		instanceCount: 用于实例化渲染，如果不是这种情况请使用1
 		firstVertex: 用作顶点缓冲区的偏移量，定义了  gl_VertexIndex  的最小值。
 		firstInstance: 用作实例渲染的偏移量，定义了  gl_InstanceIndex  的最小值。*/
-		vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+		vkCmdDraw(commandBuffer, static_cast<uint32_t>(vertices.size()), 1, 0, 0);
 		//vkCmdDrawIndexed: 用于索引绘制,我们没有使用索引缓冲区，所以我们不需要使用它
 		//vkCmdDrawIndirect: 用于间接绘制,我们没有使用间接绘制，所以我们不需要使用它
 		//vkCmdDrawIndexedIndirect: 用于间接索引绘制,我们没有使用间接索引绘制，所以我们不需要使用它
@@ -616,12 +770,16 @@ private:
 		//因为我们之前在顶点着色器中没有使用任何顶点输入，所以我们将其设置为  nullptr 。
 		VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
 		vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+		auto bindingDescription = Vertex::getBindingDescription();
+		auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
 		//绑定：数据之间的间距以及数据是按顶点还是按实例（参见实例化）
-		vertexInputInfo.vertexBindingDescriptionCount = 0;
-		vertexInputInfo.pVertexBindingDescriptions = nullptr; // Optional
+		vertexInputInfo.vertexBindingDescriptionCount = 1;
+		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+		vertexInputInfo.pVertexBindingDescriptions = &bindingDescription; // Optional
 		//属性描述：传递给顶点着色器的属性类型、从哪个绑定加载它们以及偏移量是多少
-		vertexInputInfo.vertexAttributeDescriptionCount = 0;
-		vertexInputInfo.pVertexAttributeDescriptions = nullptr; // Optional
+		vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data(); // Optional
 
 		//输入装配状态
 		VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -1198,11 +1356,6 @@ private:
 			}
 	}
 
-
-
-	
-
-
 	//清理内存,顺序不能错
 	void cleanup() {
 		//销毁同步对象
@@ -1215,6 +1368,9 @@ private:
 		
 		//销毁交换链
 		cleanupSwapChain();
+		//销毁顶点缓冲区
+		vkDestroyBuffer(device, vertexBuffer, nullptr);
+		vkFreeMemory(device, vertexBufferMemory, nullptr);
 
 		vkDestroyPipeline(device, graphicsPipeline, nullptr);
 		//销毁管线
@@ -1263,7 +1419,6 @@ private:
 		return true;
 	}
 
-
 	//调试回调函数
 	void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo) {
 		createInfo = {};
@@ -1272,7 +1427,6 @@ private:
 		createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
 		createInfo.pfnUserCallback = debugCallback;
 	}
-
 
 	//调试回调函数
 	void setupDebugMessenger() {
@@ -1288,7 +1442,6 @@ private:
 			throw std::runtime_error("failed to set up debug messenger!");
 		}
 	}
-
 
 	//调试回调函数
 	std::vector<const char*> getRequiredExtensions() {
