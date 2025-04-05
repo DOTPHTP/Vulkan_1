@@ -21,10 +21,10 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="README.md" />
-    <None Include="shader\shader.frag">
+    <None Include="shaders\shader.frag">
       <Filter>资源文件</Filter>
     </None>
-    <None Include="shader\shader.vert">
+    <None Include="shaders\shader.vert">
       <Filter>资源文件</Filter>
     </None>
   </ItemGroup>
