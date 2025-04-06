@@ -27,5 +27,8 @@
     <None Include="shaders\shader.vert">
       <Filter>资源文件</Filter>
     </None>
+    <None Include="shaders\编译.bat">
+      <Filter>资源文件</Filter>
+    </None>
   </ItemGroup>
 </Project>
