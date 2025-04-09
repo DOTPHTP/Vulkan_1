@@ -9,6 +9,7 @@
 #include "Vertex.h"
 #include "ModelLoader.h"
 #include "Render.h"
+#include "SamplerBuilder.h"
 #include <glm/gtx/hash.hpp>
 #include <stb_image.h>
 #include <glm/glm.hpp>
@@ -476,41 +477,25 @@ private:
 
 	// 为材质创建采样器
 	void createSamplerForMaterial(Material& material) {
-		VkSamplerCreateInfo samplerInfo{};
-		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-		samplerInfo.magFilter = VK_FILTER_LINEAR;
-		samplerInfo.minFilter = VK_FILTER_LINEAR;
-		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-
-		VkPhysicalDeviceProperties properties{};
-		vkGetPhysicalDeviceProperties(physicalDevice, &properties);
-
+		SamplerBuilder samplerBuilder(physicalDevice);
 		// 检查设备是否支持各向异性过滤
 		VkPhysicalDeviceFeatures features{};
 		vkGetPhysicalDeviceFeatures(physicalDevice, &features);
 
 		if (features.samplerAnisotropy) {
-			samplerInfo.anisotropyEnable = VK_TRUE;
-			samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+			material.textureSampler = samplerBuilder
+				.enableAnisotropy()
+				.setBilinearFiltering()
+				.setAddressMode(VK_SAMPLER_ADDRESS_MODE_REPEAT)
+				.build(device);
 		}
 		else {
-			samplerInfo.anisotropyEnable = VK_FALSE;
-			samplerInfo.maxAnisotropy = 1.0f;
+			material.textureSampler = samplerBuilder
+				.setBilinearFiltering()
+				.setAddressMode(VK_SAMPLER_ADDRESS_MODE_REPEAT)
+				.build(device);
 		}
-		samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-		samplerInfo.unnormalizedCoordinates = VK_FALSE;
-		samplerInfo.compareEnable = VK_FALSE;
-		samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-		samplerInfo.mipLodBias = 0.0f;
-		samplerInfo.minLod = 0.0f;
-		samplerInfo.maxLod = 0.0f;
-
-		if (vkCreateSampler(device, &samplerInfo, nullptr, &material.textureSampler) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create texture sampler for material!");
-		}
+		
 	}
 
 	void loadModel() {
@@ -595,30 +580,13 @@ private:
 
 	//创建采样器
 	void createTextureSampler() {
-		VkSamplerCreateInfo samplerInfo{};
-		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-		samplerInfo.magFilter = VK_FILTER_LINEAR;
-		samplerInfo.minFilter = VK_FILTER_LINEAR;
-		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		SamplerBuilder samplerBuilder(physicalDevice);
 
-		VkPhysicalDeviceProperties properties{};
-		vkGetPhysicalDeviceProperties(physicalDevice, &properties);
-
-		samplerInfo.anisotropyEnable = VK_TRUE;
-		samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-		samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-		samplerInfo.unnormalizedCoordinates = VK_FALSE;
-		samplerInfo.compareEnable = VK_FALSE;
-		samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-		samplerInfo.mipLodBias = 0.0f;
-		samplerInfo.minLod = 0.0f;
-		samplerInfo.maxLod = 0.0f;
-		if (vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create texture sampler!");
-		}
+		// 设置默认采样方式
+		textureSampler = samplerBuilder
+			.setBilinearFiltering()
+			.setAddressMode(VK_SAMPLER_ADDRESS_MODE_REPEAT)
+			.build(device);
 	}
 
 	void createTextureImageView() {
