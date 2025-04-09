@@ -145,6 +145,10 @@
     <None Include="shaders\shader.vert" />
     <None Include="shaders\编译.bat" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ModelLoader.h" />
+    <ClInclude Include="Vertex.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

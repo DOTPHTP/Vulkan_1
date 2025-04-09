@@ -4,10 +4,11 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
 #define STB_IMAGE_IMPLEMENTATION
-#define TINYOBJLOADER_IMPLEMENTATION
+
 #define GLM_ENABLE_EXPERIMENTAL
+#include "Vertex.h"
+#include "ModelLoader.h"
 #include <glm/gtx/hash.hpp>
-#include <tiny_obj_loader.h>
 #include <stb_image.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -30,65 +31,7 @@
 //定义同时使用的最大帧数
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
-struct Vertex {
-	glm::vec3 pos;
-	glm::vec3 color;
-	glm::vec3 normal;
-	glm::vec2 texCoord;
-	bool operator==(const Vertex& other) const {
-		return pos == other.pos && color == other.color && texCoord == other.texCoord && normal == other.normal;
-	}
 
-	//指定顶点输入约束性属性描述
-	static VkVertexInputBindingDescription getBindingDescription() {
-		VkVertexInputBindingDescription bindingDescription{};
-		bindingDescription.binding = 0;
-		//指定顶点输入属性的偏移量,我们将使用 sizeof(Vertex) 来指定偏移量
-		bindingDescription.stride = sizeof(Vertex);
-		//这里可以使用实例化渲染，但是我们不需要，所以我们将其设置为 VK_VERTEX_INPUT_RATE_VERTEX
-		bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-		return bindingDescription;
-	}
-
-	//指定顶点输入属性描述
-	static std::array<VkVertexInputAttributeDescription, 4> getAttributeDescriptions() {
-		std::array<VkVertexInputAttributeDescription, 4> attributeDescriptions{};
-
-		attributeDescriptions[0].binding = 0;
-		attributeDescriptions[0].location = 0;
-		attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-		attributeDescriptions[0].offset = offsetof(Vertex, pos);
-
-		attributeDescriptions[1].binding = 0;
-		attributeDescriptions[1].location = 1;
-		attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-		attributeDescriptions[1].offset = offsetof(Vertex, color);
-
-		attributeDescriptions[2].binding = 0;
-		attributeDescriptions[2].location = 2;
-		attributeDescriptions[2].format = VK_FORMAT_R32G32B32_SFLOAT;
-		attributeDescriptions[2].offset = offsetof(Vertex, normal);
-
-		attributeDescriptions[3].binding = 0;
-		attributeDescriptions[3].location = 3;
-		attributeDescriptions[3].format = VK_FORMAT_R32G32_SFLOAT;
-		attributeDescriptions[3].offset = offsetof(Vertex, texCoord);
-
-		return attributeDescriptions;
-	}
-
-};
-namespace std {
-	template<> struct hash<Vertex> {
-		size_t operator()(Vertex const& vertex) const {
-			return ((hash<glm::vec3>()(vertex.pos) ^
-				(hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
-				(hash<glm::vec2>()(vertex.texCoord) << 1) ^
-				(hash<glm::vec3>()(vertex.normal) << 1)
-				;
-		}
-	};
-}
 
 
 //统一缓冲对象UBO
@@ -159,12 +102,8 @@ private:
 	};
 
 	// 定义一个网格结构体，代表模型的一部分
-	struct Mesh {
-		std::vector<Vertex> vertices;
-		std::vector<uint32_t> indices;
-		int materialIndex = -1;  // 使用的材质索引
-	};
-	std::vector<Mesh> meshes;  // 替代原来的单一顶点和索引数组
+	
+	std::vector<ModelLoader::Mesh> meshes;  // 替代原来的单一顶点和索引数组
 	std::vector<Material> materials;  // 替代 loadedMaterials
 	// 顶点和索引缓冲区改为每个网格一个
 	std::vector<VkBuffer> vertexBuffers;
@@ -327,7 +266,7 @@ private:
 		vkResetCommandBuffer(commandBuffers[currentFrame], 0);
 
 		recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
-
+		//std::cout << "recordCommandBuffer" << std::endl;
 		updateUniformBuffer(currentFrame);
 
 		//提交命令缓冲区
@@ -355,6 +294,7 @@ private:
 
 		if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
 			throw std::runtime_error("failed to submit draw command buffer!");
+			
 		}
 
 		VkPresentInfoKHR presentInfo{};
@@ -574,245 +514,45 @@ private:
 	}
 
 	void loadModel() {
-		tinyobj::attrib_t attrib;
-		std::vector<tinyobj::shape_t> shapes;
-		std::vector<tinyobj::material_t> tinyMaterials;
-		std::string warn, err;
-		// 用于跟踪UV坐标范围和分布
-		glm::vec2 minTexCoord(std::numeric_limits<float>::max());
-		glm::vec2 maxTexCoord(std::numeric_limits<float>::lowest());
-		int uvCount = 0;
-		int missingUVCount = 0;
+		ModelLoader modelLoader;
+		modelLoader.loadModel(MODEL_PATH, MTL_PATH);
 
-
-		// 设置MTL基本目录为材质文件所在的目录
-		std::string mtlBaseDir = MTL_PATH;
-
-		// 加载 OBJ 文件
-		if (!tinyobj::LoadObj(&attrib, &shapes, &tinyMaterials, &warn, &err, MODEL_PATH.c_str(), mtlBaseDir.c_str(), true)) {
-			throw std::runtime_error(warn + err);
-		}
-
-		if (!warn.empty()) {
-			std::cout << "WARN: " << warn << std::endl;
-		}
-
-		if (!err.empty()) {
-			std::cerr << "ERR: " << err << std::endl;
-		}
-
-		// 先加载所有材质
-		materials.resize(tinyMaterials.size());
-		for (size_t i = 0; i < tinyMaterials.size(); i++) {
-			const auto& mat = tinyMaterials[i];
+		// 从 ModelLoader 获取网格和材质
+		meshes = modelLoader.getMeshes();
+		const auto& loadedMaterials = modelLoader.getMaterials();
+		
+		// 加载材质
+		materials.resize(loadedMaterials.size());
+		for (size_t i = 0; i < loadedMaterials.size(); i++) {
+			const auto& mat = loadedMaterials[i];
 			materials[i].name = mat.name;
-			materials[i].diffuseColor = glm::vec3(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2]);
+			materials[i].diffuseColor = mat.diffuseColor;
 
-			// 加载漫反射贴图
-			if (!mat.diffuse_texname.empty()) {
-				// 构建完整的纹理路径
-				std::string texturePath;
-
-				// 如果材质中的纹理路径是相对路径，则需要添加基本目录
-				if (mat.diffuse_texname[0] != '/' && mat.diffuse_texname.find(':') == std::string::npos) {
-					texturePath = mtlBaseDir + "/" + mat.diffuse_texname;
-				}
-				else {
-					// 如果是绝对路径，则直接使用
-					texturePath = mat.diffuse_texname;
-				}
-
-				std::cout << "Loading texture: " << texturePath << std::endl;
-
+			if (!mat.texturePath.empty()) {
 				try {
-					createTextureImage(texturePath, materials[i].diffuseTexture,
+					//std::cout << "Loading texture: " << mat.texturePath << std::endl;
+					createTextureImage(mat.texturePath, materials[i].diffuseTexture,
 						materials[i].diffuseTextureMemory, materials[i].diffuseImageView);
-
-					// 为每个材质创建采样器
 					createSamplerForMaterial(materials[i]);
 				}
 				catch (const std::exception& e) {
-					std::cerr << "Failed to load texture '" << texturePath << "': " << e.what() << std::endl;
+					std::cerr << "Failed to load texture '" << mat.texturePath << "': " << e.what() << std::endl;
 					// 使用默认纹理
 					materials[i].diffuseTexture = textureImage;
 					materials[i].diffuseImageView = textureImageView;
 					materials[i].textureSampler = textureSampler;
 				}
 			}
-		}
-
-		// 用于计算模型的边界盒
-		glm::vec3 min_bounds(std::numeric_limits<float>::max());
-		glm::vec3 max_bounds(std::numeric_limits<float>::lowest());
-
-		// 收集所有顶点数据，用于计算模型的边界
-		std::vector<glm::vec3> all_vertices;
-
-		// 按照shape和材质拆分网格
-		meshes.clear();
-		for (const auto& shape : shapes) {
-			// 收集每个材质的面
-			std::map<int, Mesh> materialToMesh;
-
-			// 处理所有面
-			size_t indexOffset = 0;
-			for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
-				int materialId = shape.mesh.material_ids[f];
-				if (materialId < 0 || materialId >= tinyMaterials.size()) {
-					materialId = 0;  // 默认材质
-				}
-
-				// 为这个材质创建或获取网格
-				if (materialToMesh.find(materialId) == materialToMesh.end()) {
-					materialToMesh[materialId] = Mesh();
-					materialToMesh[materialId].materialIndex = materialId;
-				}
-
-				Mesh& currentMesh = materialToMesh[materialId];
-
-				// 添加这个面的顶点
-				size_t fv = shape.mesh.num_face_vertices[f];
-				for (size_t v = 0; v < fv; v++) {
-					tinyobj::index_t idx = shape.mesh.indices[indexOffset + v];
-
-					Vertex vertex{};
-
-					// 顶点位置
-					if (idx.vertex_index >= 0) {
-						vertex.pos = {
-							attrib.vertices[3 * idx.vertex_index + 0],
-							attrib.vertices[3 * idx.vertex_index + 1],
-							attrib.vertices[3 * idx.vertex_index + 2]
-						};
-
-						// 更新边界盒
-						min_bounds.x = std::min(min_bounds.x, vertex.pos.x);
-						min_bounds.y = std::min(min_bounds.y, vertex.pos.y);
-						min_bounds.z = std::min(min_bounds.z, vertex.pos.z);
-
-						max_bounds.x = std::max(max_bounds.x, vertex.pos.x);
-						max_bounds.y = std::max(max_bounds.y, vertex.pos.y);
-						max_bounds.z = std::max(max_bounds.z, vertex.pos.z);
-
-						all_vertices.push_back(vertex.pos);
-					}
-
-					// 法线
-					if (idx.normal_index >= 0) {
-						vertex.normal = {
-							attrib.normals[3 * idx.normal_index + 0],
-							attrib.normals[3 * idx.normal_index + 1],
-							attrib.normals[3 * idx.normal_index + 2]
-						};
-					}
-					else {
-						// 如果没有法线，提供默认法线
-						vertex.normal = glm::vec3(0.0f, 0.0f, 1.0f);
-					}
-
-					// 纹理坐标
-					// 在处理顶点纹理坐标时：
-					if (idx.texcoord_index >= 0) {
-						float u = attrib.texcoords[2 * idx.texcoord_index + 0];
-						float v = attrib.texcoords[2 * idx.texcoord_index + 1];
-
-						// 打印一些样本UV值
-						if (uvCount < 10) {
-							std::cout << "Sample UV: (" << u << ", " << v << ") ";
-							std::cout << "After flip: (" << u << ", " << 1.0f - v << ")" << std::endl;
-						}
-						uvCount++;
-						// 将UV值限定在[0,1]范围内
-						/*u = std::clamp(u, 0.0f, 1.0f);
-						v = std::clamp(v, 0.0f, 1.0f);*/
-						// 跟踪最小最大UV
-						minTexCoord.x = std::min(minTexCoord.x, u);
-						minTexCoord.y = std::min(minTexCoord.y, v);
-						maxTexCoord.x = std::max(maxTexCoord.x, u);
-						maxTexCoord.y = std::max(maxTexCoord.y, v);
-
-						vertex.texCoord = { u,v };
-					}
-					else {
-						missingUVCount++;
-						vertex.texCoord = glm::vec2(0.0f, 0.0f);
-					}
-
-					// 设置顶点颜色
-					if (materialId >= 0 && materialId < tinyMaterials.size()) {
-						const auto& mat = tinyMaterials[materialId];
-						vertex.color = glm::vec3(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2]);
-					}
-					else {
-						vertex.color = glm::vec3(1.0f);  // 默认白色
-					}
-
-					// 添加到网格的顶点列表
-					uint32_t vertexIndex = static_cast<uint32_t>(currentMesh.vertices.size());
-					currentMesh.vertices.push_back(vertex);
-					currentMesh.indices.push_back(vertexIndex);
-				}
-
-				indexOffset += fv;
-			}
-
-			// 将所有收集的网格添加到主列表
-			for (auto& [matId, mesh] : materialToMesh) {
-				meshes.push_back(std::move(mesh));
-			}
-		}
-
-		// 计算模型中心和尺寸
-		glm::vec3 center = (min_bounds + max_bounds) * 0.5f;
-		glm::vec3 size = max_bounds - min_bounds;
-		float max_dimension = std::max(std::max(size.x, size.y), size.z);
-
-		// 如果最大维度为0，避免除以0
-		if (max_dimension <= 0.0f) {
-			max_dimension = 1.0f;
-		}
-
-		// 归一化系数 - 将模型缩放到 [-1,1] 范围内
-		float normalize_factor = 2.0f / max_dimension;
-
-		std::cout << "Model bounds: Min(" << min_bounds.x << ", " << min_bounds.y << ", " << min_bounds.z << ") "
-			<< "Max(" << max_bounds.x << ", " << max_bounds.y << ", " << max_bounds.z << ")" << std::endl;
-		std::cout << "Model center: (" << center.x << ", " << center.y << ", " << center.z << ")" << std::endl;
-		std::cout << "Max dimension: " << max_dimension << ", Normalize factor: " << normalize_factor << std::endl;
-
-		// 应用归一化变换到所有网格的顶点
-		for (auto& mesh : meshes) {
-			for (auto& vertex : mesh.vertices) {
-				// 先将顶点平移到原点
-				vertex.pos -= center;
-				// 然后进行归一化缩放
-				vertex.pos *= normalize_factor;
-			}
-		}
-
-		// 为了调试，打印每个材质的信息
-		for (size_t i = 0; i < materials.size(); i++) {
-			std::cout << "Material " << i << ": " << materials[i].name << std::endl;
-			if (materials[i].diffuseTexture != VK_NULL_HANDLE) {
-				std::cout << "  Has texture" << std::endl;
-			}
 			else {
-				std::cout << "  No texture" << std::endl;
+				// 如果没有纹理，使用默认纹理
+				materials[i].diffuseTexture = textureImage;
+				materials[i].diffuseImageView = textureImageView;
+				materials[i].textureSampler = textureSampler;
 			}
 		}
-
-		// 在处理网格时，确保正确关联材质
-		// 在创建网格后添加以下调试代码
-		for (size_t i = 0; i < meshes.size(); i++) {
-			std::cout << "Mesh " << i << " material index: " << meshes[i].materialIndex << std::endl;
-			std::cout << "  Vertices: " << meshes[i].vertices.size() << std::endl;
-			std::cout << "  Indices: " << meshes[i].indices.size() << std::endl;
-		}
-
-
-		std::cout << "Loaded model with " << meshes.size() << " meshes and "
-			<< materials.size() << " materials." << std::endl;
-		std::cout << "Model normalized to [-1,1] range" << std::endl;
+		
+		/*std::cout << "Model loaded with " << meshes.size() << " meshes and "
+			<< materials.size() << " materials." << std::endl;*/
 	}
 
 
@@ -917,6 +657,7 @@ private:
 
 		//stbi_set_flip_vertically_on_load(false);
 		textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
+		//std::cout << "Texture image created: " << texturePath << std::endl;
 	}
 
 	
@@ -1149,7 +890,7 @@ private:
 			descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			descriptorWrites[1].descriptorCount = 1;
 			descriptorWrites[1].pImageInfo = &imageInfo;
-
+			//std::cout << "material descriptor set created" << material.name << std::endl;
 			vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()),
 				descriptorWrites.data(), 0, nullptr);
 		}
@@ -1521,7 +1262,7 @@ private:
 
 		// 对每个网格进行绘制
 		for (size_t i = 0; i < meshes.size(); i++) {
-			const Mesh& mesh = meshes[i];
+			const ModelLoader::Mesh& mesh = meshes[i];
 
 			// 绑定顶点缓冲区
 			VkBuffer vertexBufferHandls[] = { vertexBuffers[i] };
@@ -1539,8 +1280,9 @@ private:
 						pipelineLayout, 0, 1,
 						&material.descriptorSet, 0, nullptr);
 				}
+				//std::cout << "mesh drawed   " << material.name << std::endl;
 			}
-
+			//std::cout << "mesh drawed   " << mesh.materialIndex << std::endl;
 			// 绘制网格
 			vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(mesh.indices.size()), 1, 0, 0, 0);
 		}
@@ -2379,8 +2121,10 @@ private:
 			}
 
 			if (material.diffuseImageView != VK_NULL_HANDLE) {
+				//std::cout << "Destroying VkImageView: " << material.diffuseImageView << std::endl;
 				vkDestroyImageView(device, material.diffuseImageView, nullptr);
 				material.diffuseImageView = VK_NULL_HANDLE;
+
 			}
 
 			if (material.diffuseTexture != VK_NULL_HANDLE) {
