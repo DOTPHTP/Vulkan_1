@@ -8,6 +8,10 @@
 #include <vulkan/vulkan.h>
 #include <array>
 #include <glm/gtx/hash.hpp>
+
+//顶点类，我们会用这个类来描述顶点的属性
+//注意我们会使用这个类来模版特化renderer类。需要提供能够支持std::unordered_set的重载hash函数，以及两个用于向渲染器传递顶点属性的函数
+//如果需要其他不同的顶点，可以定义不同的顶点类。但是请确保支持上面的条件。并且这两个方法的名称和返回值类型必须与下面的相同
 struct Vertex {
 	glm::vec3 pos;
 	glm::vec3 color;

@@ -3,13 +3,16 @@
 #include <vulkan/vulkan.h>
 extern class HelloTriangleApplication;
 template <typename VertexType>
-class Renderer {
+
+//渲染管线类，我们将会添加一些方法使得可以创建不同的渲染管线
+class Render {
 public:
-    Renderer(VkDevice device, VkPhysicalDevice phy ,VkExtent2D swapChainExtent, VkFormat swapChainImageFormat,
+    Render(VkDevice device, VkPhysicalDevice phy ,VkExtent2D swapChainExtent, VkFormat swapChainImageFormat,
         const std::string& vertShaderPath, const std::string& fragShaderPath,
         VkDescriptorSetLayout descriptorSetLayout)
         : device(device),physicalDevice(phy), swapChainExtent(swapChainExtent), swapChainImageFormat(swapChainImageFormat),
         vertShaderPath(vertShaderPath), fragShaderPath(fragShaderPath), descriptorSetLayout(descriptorSetLayout) {
+		maxUsableSampleCount = getMaxUsableSampleCount(physicalDevice);
     }
 
     void initialize() {
@@ -21,12 +24,53 @@ public:
     VkPipeline getGraphicsPipeline() const { return graphicsPipeline; }
     VkPipelineLayout getPipelineLayout() const { return pipelineLayout; }
 
-    ~Renderer() {
+    ~Render() {
         vkDestroyPipeline(device, graphicsPipeline, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyRenderPass(device, renderPass, nullptr);
     }
 
+
+     VkSampleCountFlagBits getMaxUsableSampleCount(VkPhysicalDevice physicalDevice) {
+        VkPhysicalDeviceProperties physicalDeviceProperties;
+        vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
+
+        VkSampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts &
+            physicalDeviceProperties.limits.framebufferDepthSampleCounts;
+        if (counts & VK_SAMPLE_COUNT_64_BIT) { return VK_SAMPLE_COUNT_64_BIT; }
+        if (counts & VK_SAMPLE_COUNT_32_BIT) { return VK_SAMPLE_COUNT_32_BIT; }
+        if (counts & VK_SAMPLE_COUNT_16_BIT) { return VK_SAMPLE_COUNT_16_BIT; }
+        if (counts & VK_SAMPLE_COUNT_8_BIT) { return VK_SAMPLE_COUNT_8_BIT; }
+        if (counts & VK_SAMPLE_COUNT_4_BIT) { return VK_SAMPLE_COUNT_4_BIT; }
+        if (counts & VK_SAMPLE_COUNT_2_BIT) { return VK_SAMPLE_COUNT_2_BIT; }
+        return VK_SAMPLE_COUNT_1_BIT;
+    }
+
+    
+
+    VkFormat findDepthFormat() {
+        return findSupportedFormat(
+            { VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT },
+            VK_IMAGE_TILING_OPTIMAL,
+            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+        );
+    }
+
+    VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) {
+        for (VkFormat format : candidates) {
+            VkFormatProperties props;
+            vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &props);
+
+            if (tiling == VK_IMAGE_TILING_LINEAR && (props.linearTilingFeatures & features) == features) {
+                return format;
+            }
+            else if (tiling == VK_IMAGE_TILING_OPTIMAL && (props.optimalTilingFeatures & features) == features) {
+                return format;
+            }
+        }
+
+        throw std::runtime_error("failed to find supported format!");
+    }
 private:
     VkDevice device = VK_NULL_HANDLE;
 	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -35,16 +79,30 @@ private:
     std::string vertShaderPath;
     std::string fragShaderPath;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
-
+    VkSampleCountFlagBits maxUsableSampleCount;
     VkRenderPass renderPass = VK_NULL_HANDLE;
     VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+
+
+    VkShaderModule createShaderModule(const std::vector<char>& code) {
+        VkShaderModuleCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        createInfo.codeSize = code.size();
+        createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+        VkShaderModule shaderModule;
+        if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create shader module!");
+        }
+        return shaderModule;
+    }
 
     void createRenderPass() {
         // 颜色附件
         VkAttachmentDescription colorAttachment{};
         colorAttachment.format = swapChainImageFormat;
-        colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        colorAttachment.samples = maxUsableSampleCount;
         colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -59,7 +117,7 @@ private:
         // 深度附件
         VkAttachmentDescription depthAttachment{};
         depthAttachment.format = findDepthFormat();
-        depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        depthAttachment.samples = maxUsableSampleCount;
         depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -71,12 +129,30 @@ private:
         depthAttachmentRef.attachment = 1;
         depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
+
+        // 解析附件
+        VkAttachmentDescription resolveAttachment{};
+        resolveAttachment.format = swapChainImageFormat;
+        resolveAttachment.samples = VK_SAMPLE_COUNT_1_BIT; // 单采样
+        resolveAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        resolveAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        resolveAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        resolveAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        resolveAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        resolveAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+        VkAttachmentReference resolveAttachmentRef{};
+        resolveAttachmentRef.attachment = 2; // 假设解析附件是第3个附件
+        resolveAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
         // 子通道
         VkSubpassDescription subpass{};
         subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         subpass.colorAttachmentCount = 1;
         subpass.pColorAttachments = &colorAttachmentRef;
         subpass.pDepthStencilAttachment = &depthAttachmentRef;
+        // 在子通道中添加解析附件
+        subpass.pResolveAttachments = &resolveAttachmentRef;
 
         // 子通道依赖
         VkSubpassDependency dependency{};
@@ -88,7 +164,7 @@ private:
         dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
         // 渲染通道创建信息
-        std::array<VkAttachmentDescription, 2> attachments = { colorAttachment, depthAttachment };
+        std::array<VkAttachmentDescription, 3> attachments = { colorAttachment, depthAttachment, resolveAttachment };
         VkRenderPassCreateInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
         renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
@@ -170,8 +246,8 @@ private:
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        multisampling.sampleShadingEnable = VK_FALSE;
-        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        multisampling.sampleShadingEnable = VK_TRUE;
+        multisampling.rasterizationSamples = maxUsableSampleCount;
 
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -241,41 +317,7 @@ private:
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
     }
 
-    VkShaderModule createShaderModule(const std::vector<char>& code) {
-        VkShaderModuleCreateInfo createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-        createInfo.codeSize = code.size();
-        createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
 
-        VkShaderModule shaderModule;
-        if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create shader module!");
-        }
-        return shaderModule;
-    }
-
-    VkFormat findDepthFormat() {
-        return findSupportedFormat(
-            { VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT },
-            VK_IMAGE_TILING_OPTIMAL,
-            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
-        );
-    }
-
-    VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) {
-        for (VkFormat format : candidates) {
-            VkFormatProperties props;
-            vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &props);
-
-            if (tiling == VK_IMAGE_TILING_LINEAR && (props.linearTilingFeatures & features) == features) {
-                return format;
-            }
-            else if (tiling == VK_IMAGE_TILING_OPTIMAL && (props.optimalTilingFeatures & features) == features) {
-                return format;
-            }
-        }
-
-        throw std::runtime_error("failed to find supported format!");
-    }
+    
 };
 

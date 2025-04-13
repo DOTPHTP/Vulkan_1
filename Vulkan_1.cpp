@@ -113,7 +113,7 @@ private:
 	std::vector<VkBuffer> indexBuffers;
 	std::vector<VkDeviceMemory> indexBufferMemories;
 
-	Renderer<Vertex>* renderer;
+	Render<Vertex>* renderer;
 
 	const uint32_t WIDTH = 800;
 	const uint32_t HEIGHT = 600;
@@ -138,6 +138,12 @@ private:
 	VkImage depthImage;
 	VkDeviceMemory depthImageMemory;
 	VkImageView depthImageView;
+
+
+	//解析附件
+	VkImageView resolveImageView;
+	VkImage resolveImage;
+	VkDeviceMemory resolveImageMemory;
 	
 	//统一缓冲区
 	std::vector<VkBuffer> uniformBuffers;
@@ -261,7 +267,7 @@ private:
 		vkResetCommandBuffer(commandBuffers[currentFrame], 0);
 
 		recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
-		//std::cout << "recordCommandBuffer" << std::endl;
+		
 		updateUniformBuffer(currentFrame);
 
 		//提交命令缓冲区
@@ -353,7 +359,7 @@ private:
 
 		// 透视投影，使用较小的视场角
 		ubo.proj = glm::perspective(
-			glm::radians(30.0f),                                   // 视场角
+			glm::radians(37.0f),                                   // 视场角
 			swapChainExtent.width / (float)swapChainExtent.height, // 宽高比
 			0.1f,                                                  // 近平面
 			10.0f                                                  // 远平面
@@ -379,6 +385,7 @@ private:
 		createSwapChain();
 		createImageViews();
 		createDepthResources();
+		createResolveResources();
 		createFramebuffers();
 	}
 
@@ -389,6 +396,33 @@ private:
 
 		for (size_t i = 0; i < swapChainImageViews.size(); i++) {
 			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
+		}
+		// 销毁深度图像视图和内存
+		if (depthImageView != VK_NULL_HANDLE) {
+			vkDestroyImageView(device, depthImageView, nullptr);
+			depthImageView = VK_NULL_HANDLE;
+		}
+		if (depthImage != VK_NULL_HANDLE) {
+			vkDestroyImage(device, depthImage, nullptr);
+			depthImage = VK_NULL_HANDLE;
+		}
+		if (depthImageMemory != VK_NULL_HANDLE) {
+			vkFreeMemory(device, depthImageMemory, nullptr);
+			depthImageMemory = VK_NULL_HANDLE;
+		}
+
+		// 销毁解析图像视图和内存
+		if (resolveImageView != VK_NULL_HANDLE) {
+			vkDestroyImageView(device, resolveImageView, nullptr);
+			resolveImageView = VK_NULL_HANDLE;
+		}
+		if (resolveImage != VK_NULL_HANDLE) {
+			vkDestroyImage(device, resolveImage, nullptr);
+			resolveImage = VK_NULL_HANDLE;
+		}
+		if (resolveImageMemory != VK_NULL_HANDLE) {
+			vkFreeMemory(device, resolveImageMemory, nullptr);
+			resolveImageMemory = VK_NULL_HANDLE;
 		}
 
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
@@ -454,6 +488,8 @@ private:
 		createCommandPool();
 		
 		createDepthResources();
+		createResolveResources();
+
 		createFramebuffers();
 		createTextureImage("textures/texture.jpg",textureImage,textureImageMemory,textureImageView);
 		createTextureImageView();
@@ -470,7 +506,7 @@ private:
 	}
 
 	void createRender() {
-		renderer = new Renderer<Vertex>(device, physicalDevice, swapChainExtent, swapChainImageFormat,
+		renderer = new Render<Vertex>(device, physicalDevice, swapChainExtent, swapChainImageFormat,
 			"shaders/vert.spv", "shaders/frag.spv", descriptorSetLayout);
 		renderer->initialize();
 	}
@@ -543,12 +579,47 @@ private:
 
 	void createDepthResources() {
 		VkFormat depthFormat = findDepthFormat();
-		createImage(swapChainExtent.width, swapChainExtent.height, depthFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depthImage, depthImageMemory);
+		createImage(swapChainExtent.width, 
+			swapChainExtent.height, 
+			depthFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, renderer->getMaxUsableSampleCount(physicalDevice),
+			depthImage, depthImageMemory);
 		depthImageView = createImageView(depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
 
 		transitionImageLayout(depthImage, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+		//std::cout << "DepthImageView create: " << (int*)depthImageView << std::endl;
 
 	}
+
+	void createResolveResources() {
+		// 解析附件的格式与交换链图像格式相同
+		VkFormat resolveFormat = swapChainImageFormat;
+
+		// 创建解析附件的图像
+		createImage(
+			swapChainExtent.width,
+			swapChainExtent.height,
+			resolveFormat,
+			VK_IMAGE_TILING_OPTIMAL,
+			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			renderer->getMaxUsableSampleCount(physicalDevice),
+			resolveImage,
+			resolveImageMemory
+		);
+
+		// 创建解析附件的图像视图
+		resolveImageView = createImageView(resolveImage, resolveFormat, VK_IMAGE_ASPECT_COLOR_BIT);
+		//std::cout << "craete resolveImageView: " << (int*)resolveImageView << std::endl;
+
+		// 转换解析附件的布局
+		transitionImageLayout(
+			resolveImage,
+			resolveFormat,
+			VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+		);
+	}
+
 
 	VkFormat findDepthFormat() {
 		return findSupportedFormat(
@@ -614,7 +685,13 @@ private:
 		vkUnmapMemory(device, stagingBufferMemory);
 		stbi_image_free(pixels);
 
-		createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
+		createImage(texWidth, texHeight, 
+			VK_FORMAT_R8G8B8A8_SRGB, 
+			VK_IMAGE_TILING_OPTIMAL, 
+			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
+			VK_SAMPLE_COUNT_1_BIT,
+			textureImage, textureImageMemory);
 
 		transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 		copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
@@ -625,6 +702,8 @@ private:
 
 		//stbi_set_flip_vertically_on_load(false);
 		textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
+		//std::cout << "textureimageView create:" << (int*)textureImage << std::endl;
+
 		//std::cout << "Texture image created: " << texturePath << std::endl;
 	}
 
@@ -637,6 +716,7 @@ private:
 		VkImageTiling tiling, 
 		VkImageUsageFlags usage, 
 		VkMemoryPropertyFlags properties, 
+		VkSampleCountFlagBits numSamples,
 		VkImage& image, 
 		VkDeviceMemory& imageMemory) {
 
@@ -653,7 +733,7 @@ private:
 		imageInfo.tiling = tiling;
 		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		imageInfo.usage = usage;
-		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+		imageInfo.samples = numSamples;
 		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
 		if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
@@ -721,7 +801,7 @@ private:
 
 		VkImageView imageView;
 		if (vkCreateImageView(device, &viewInfo, nullptr, &imageView) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create texture image view!");
+			throw std::runtime_error("failed to create image view!");
 		}
 
 		return imageView;
@@ -995,6 +1075,14 @@ private:
 			sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 			destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
 		}
+		else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+			// 添加对解析附件的支持
+			barrier.srcAccessMask = 0;
+			barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+			sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+			destinationStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		}
 		else {
 			throw std::invalid_argument("unsupported layout transition!");
 		}
@@ -1243,9 +1331,11 @@ private:
 
 		//遍历图像视图，创建帧缓冲区
 		for (size_t i = 0; i < swapChainImageViews.size(); i++) {
-			std::array<VkImageView, 2> attachments = {
-				swapChainImageViews[i],
-				depthImageView
+			std::array<VkImageView, 3> attachments = {
+				//这个顺序要和渲染通道的颜色附件和深度附件定义时指定的顺序一致
+				resolveImageView,
+				depthImageView,
+				swapChainImageViews[i]
 			};
 
 			VkFramebufferCreateInfo framebufferInfo{};
@@ -1287,6 +1377,7 @@ private:
 
 		for (uint32_t i = 0; i < swapChainImages.size(); i++) {
 			swapChainImageViews[i] = createImageView(swapChainImages[i], swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT);
+			//std::cout << "swapChainImageViews created：" << (int*)swapChainImageViews[i] << std::endl;
 		}
 	}
 
@@ -1359,7 +1450,6 @@ private:
 		vkGetSwapchainImagesKHR(device, swapChain, &imageCount, nullptr);
 		swapChainImages.resize(imageCount);
 		vkGetSwapchainImagesKHR(device, swapChain, &imageCount, swapChainImages.data());
-
 		//获取交换链图像格式和范围
 		swapChainImageFormat = surfaceFormat.format;
 		swapChainExtent = extent;
@@ -1507,6 +1597,7 @@ private:
 
 
 		VkPhysicalDeviceFeatures deviceFeatures{};
+		deviceFeatures.sampleRateShading = VK_TRUE;
 		//创建逻辑设备
 		VkDeviceCreateInfo createInfo{};
 		createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -1733,10 +1824,33 @@ private:
 			}
 		}
 
-		//销毁深度图像
-		vkDestroyImageView(device, depthImageView, nullptr);
-		vkDestroyImage(device, depthImage, nullptr);
-		vkFreeMemory(device, depthImageMemory, nullptr);
+		// 销毁深度图像
+		if (depthImageView != VK_NULL_HANDLE) {
+			vkDestroyImageView(device, depthImageView, nullptr);
+			depthImageView = VK_NULL_HANDLE;
+		}
+		if (depthImage != VK_NULL_HANDLE) {
+			vkDestroyImage(device, depthImage, nullptr);
+			depthImage = VK_NULL_HANDLE;
+		}
+		if (depthImageMemory != VK_NULL_HANDLE) {
+			vkFreeMemory(device, depthImageMemory, nullptr);
+			depthImageMemory = VK_NULL_HANDLE;
+		}
+
+		// 销毁解析图像
+		if (resolveImageView != VK_NULL_HANDLE) {
+			vkDestroyImageView(device, resolveImageView, nullptr);
+			resolveImageView = VK_NULL_HANDLE;
+		}
+		if (resolveImage != VK_NULL_HANDLE) {
+			vkDestroyImage(device, resolveImage, nullptr);
+			resolveImage = VK_NULL_HANDLE;
+		}
+		if (resolveImageMemory != VK_NULL_HANDLE) {
+			vkFreeMemory(device, resolveImageMemory, nullptr);
+			resolveImageMemory = VK_NULL_HANDLE;
+		}
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 			vkDestroyBuffer(device, uniformBuffers[i], nullptr);

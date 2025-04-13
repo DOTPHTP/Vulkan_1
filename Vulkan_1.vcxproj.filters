@@ -30,6 +30,15 @@
     <None Include="shaders\编译.bat">
       <Filter>资源文件</Filter>
     </None>
+    <None Include="shaders\pbr.frag">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="shaders\brdf.glsl">
+      <Filter>资源文件</Filter>
+    </None>
+    <None Include="shaders\textures.glsl">
+      <Filter>资源文件</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ModelLoader.h">

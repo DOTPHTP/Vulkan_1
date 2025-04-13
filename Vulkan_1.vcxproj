@@ -141,8 +141,11 @@
     <None Include="README.md">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
     </None>
+    <None Include="shaders\brdf.glsl" />
+    <None Include="shaders\pbr.frag" />
     <None Include="shaders\shader.frag" />
     <None Include="shaders\shader.vert" />
+    <None Include="shaders\textures.glsl" />
     <None Include="shaders\编译.bat" />
   </ItemGroup>
   <ItemGroup>
