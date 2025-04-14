@@ -1,7 +1,8 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
-extern class HelloTriangleApplication;
+#include "VulkanUtils.h"
+
 template <typename VertexType>
 
 //渲染管线类，我们将会添加一些方法使得可以创建不同的渲染管线
@@ -49,28 +50,14 @@ public:
     
 
     VkFormat findDepthFormat() {
-        return findSupportedFormat(
+        return VulkanUtils:: findSupportedFormat(physicalDevice,
             { VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT },
             VK_IMAGE_TILING_OPTIMAL,
             VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
         );
     }
 
-    VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) {
-        for (VkFormat format : candidates) {
-            VkFormatProperties props;
-            vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &props);
-
-            if (tiling == VK_IMAGE_TILING_LINEAR && (props.linearTilingFeatures & features) == features) {
-                return format;
-            }
-            else if (tiling == VK_IMAGE_TILING_OPTIMAL && (props.optimalTilingFeatures & features) == features) {
-                return format;
-            }
-        }
-
-        throw std::runtime_error("failed to find supported format!");
-    }
+    
 private:
     VkDevice device = VK_NULL_HANDLE;
 	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -180,8 +167,8 @@ private:
     }
 
     void createGraphicsPipeline() {
-        auto vertShaderCode = HelloTriangleApplication::readFile(vertShaderPath);
-        auto fragShaderCode = HelloTriangleApplication::readFile(fragShaderPath);
+        auto vertShaderCode = VulkanUtils::readFile(vertShaderPath);
+        auto fragShaderCode = VulkanUtils::readFile(fragShaderPath);
 
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);

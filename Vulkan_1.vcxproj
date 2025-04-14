@@ -153,6 +153,7 @@
     <ClInclude Include="Render.h" />
     <ClInclude Include="SamplerBuilder.h" />
     <ClInclude Include="Vertex.h" />
+    <ClInclude Include="VulkanUtils.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
