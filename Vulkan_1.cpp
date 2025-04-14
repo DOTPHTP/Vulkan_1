@@ -475,9 +475,11 @@ private:
 	void loadModels() {
 		std::vector<std::pair<std::string, std::string>> modelPaths = {
 			{"asserts/hutao/hutao.obj", "asserts/hutao"},
+			{"asserts/grass/grass.obj","asserts/grass"}
 		};
 
-		for (const auto& [modelPath, materialPath] : modelPaths) {
+		for (size_t i = 0; i < modelPaths.size(); ++i) {
+			const auto& [modelPath, materialPath] = modelPaths[i];
 			ModelLoader modelLoader;
 			if (!modelLoader.loadModel(modelPath, materialPath)) {
 				throw std::runtime_error("Failed to load model: " + modelPath);
@@ -485,13 +487,29 @@ private:
 
 			// 创建 MeshObject
 			MeshObject meshObject(modelLoader.getMeshes(), modelLoader.getMaterials());
+			meshObject.resetTransform();
+			if (i == 0) {
+				// 第一个模型（例如：胡桃）
 
-			// 设置初始变换矩阵（可根据需要调整）
-			if (meshObjects.empty()) {
-				meshObject.translate(glm::vec3(0.0f, 0.0f, 0.0f)); // 第一个模型
+				meshObject.translate(glm::vec3(0.0f, 0.0f, 0.0f)); // 放置在原点
 			}
-			else {
-				meshObject.translate(glm::vec3(meshObjects.size() * 2.0f, 0.0f, 0.0f)); // 后续模型
+			else if (i == 1) {
+				// 第二个模型（草地）
+				glm::vec3 minBounds, maxBounds;
+				meshObjects[0].getBoundingBox(minBounds, maxBounds); // 获取第一个模型的包围盒
+
+				// 计算第一个模型的宽度和深度
+				glm::vec3 size = maxBounds - minBounds;
+				float width = size.x;
+				float height = size.y;
+				float depth = size.z;
+
+				
+				meshObject.rotate(90.0f, glm::vec3(-1.0f, 0.0f, 0.0f)); 
+				
+				// 平移草地模型，使其位于第一个模型的底部
+				float groundLevel = maxBounds.y; // 第一个模型的最低点（Y 轴,因为这个）
+				meshObject.translate(glm::vec3(0.0f, -groundLevel, 0.0f)); // 将 Y 轴值映射到 Z 轴
 			}
 
 			meshObjects.push_back(std::move(meshObject));
@@ -588,7 +606,7 @@ private:
 			glm::mat4 rotationMatrix = glm::rotate(glm::mat4(1.0f), rotationAngle, glm::vec3(0.0f, 1.0f, 0.0f));
 			ubo.model = rotationMatrix * meshObjects[i].getModelMatrix();
 			ubo.view = glm::lookAt(
-				glm::vec3(0.0f, 0.0f, 3.0f),   // 相机位置
+				glm::vec3(0.0f, 0.0f, 5.0f),   // 相机位置
 				glm::vec3(0.0f, 0.0f, 0.0f),   // 目标位置
 				glm::vec3(0.0f, 1.0f, 0.0f)    // 上方向
 			);
