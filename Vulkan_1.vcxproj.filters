@@ -56,5 +56,8 @@
     <ClInclude Include="VulkanUtils.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="MeshObject.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

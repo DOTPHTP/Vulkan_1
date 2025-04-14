@@ -221,4 +221,6 @@ public:
 
         throw std::runtime_error("Failed to find suitable memory type!");
     }
+
+	
 };

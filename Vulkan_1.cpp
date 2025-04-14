@@ -4,22 +4,16 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
 #define STB_IMAGE_IMPLEMENTATION
-
 #define GLM_ENABLE_EXPERIMENTAL
 #include "Vertex.h"
+#include "MeshObject.h"
 #include "ModelLoader.h"
 #include "Render.h"
 #include "SamplerBuilder.h"
 #include "VulkanUtils.h"
-#include <glm/gtx/hash.hpp>
 #include <stb_image.h>
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 #include <chrono>
-#include <iostream>
 #include <cstdlib>
-#include <stdexcept>
-#include <vector>
 #include <cstring>
 #include <map>
 #include <optional>
@@ -28,14 +22,9 @@
 #include <limits> // Necessary for std::numeric_limits
 #include <algorithm> // Necessary for std::clamp
 #include <fstream>
-#include <string>
-#include <array>
 #include <unordered_map>
 //定义同时使用的最大帧数
 const int MAX_FRAMES_IN_FLIGHT = 2;
-
-
-
 
 //统一缓冲对象UBO
 struct UniformBufferObject {
@@ -43,8 +32,6 @@ struct UniformBufferObject {
 	glm::mat4 view;
 	glm::mat4 proj;
 };
-
-
 
 class HelloTriangleApplication {
 public:
@@ -54,47 +41,39 @@ public:
 		mainLoop();
 		cleanup();
 	};
-
-	
-
-	//获取扩展
-	void getExtensions() {
-		uint32_t extensionCount = 0;
-		//获取扩展数量
-		vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
-		//获取扩展属性
-		std::vector<VkExtensionProperties> extensions(extensionCount);
-		vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, extensions.data());
-		//打印扩展
-		std::cout << "available extensions:" << std::endl;
-		for (const auto& extension : extensions) {
-			std::cout << '\t' << extension.extensionName << std::endl;
-		}
-	}
-
-
 private:
-
-	struct Material {
-		glm::vec3 diffuseColor;
-		std::string name;  // 材质名称
-		VkImage diffuseTexture = VK_NULL_HANDLE;
-		VkImageView diffuseImageView = VK_NULL_HANDLE;
-		VkSampler textureSampler = VK_NULL_HANDLE;
-		VkDeviceMemory diffuseTextureMemory = VK_NULL_HANDLE;
-		VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+	
+	struct MeshDrawInfo {
+		uint32_t indexOffset;
+		uint32_t indexCount;
+		uint32_t materialIndex;
+	};
+	struct VulkanMesh {
+		VkBuffer vertexBuffer;
+		VkDeviceMemory vertexBufferMemory;
+		VkBuffer indexBuffer;
+		VkDeviceMemory indexBufferMemory;
+		std::vector<MeshDrawInfo> materialDrawInfos;
+	};
+	struct VulkanMaterial {
+		VkImage diffuseTexture;
+		VkDeviceMemory diffuseTextureMemory;
+		VkImageView diffuseImageView;
+		VkSampler textureSampler;
+		VkDescriptorSet descriptorSet;
+	};
+	struct PerObjectUniformBuffer {
+		std::vector<VkBuffer> buffers;
+		std::vector<VkDeviceMemory> memories;
+		std::vector<void*> mapped;
 	};
 
+	std::vector<MeshObject> meshObjects; // 存储逻辑层的网格体
+	std::vector<VulkanMesh> vulkanMeshes; // 存储 Vulkan 相关的网格体缓冲
+	std::vector<PerObjectUniformBuffer> perObjectUniformBuffers; // 每个物体的统一缓冲区
+	std::vector<std::vector<VulkanMaterial>> vulkanMaterials; // 存储 Vulkan 相关的材质
 	// 定义一个网格结构体，代表模型的一部分
 	
-	std::vector<ModelLoader::Mesh> meshes;  // 替代原来的单一顶点和索引数组
-	std::vector<Material> materials;  // 替代 loadedMaterials
-	// 顶点和索引缓冲区改为每个网格一个
-	std::vector<VkBuffer> vertexBuffers;
-	std::vector<VkDeviceMemory> vertexBufferMemories;
-	std::vector<VkBuffer> indexBuffers;
-	std::vector<VkDeviceMemory> indexBufferMemories;
-
 	Render<Vertex>* renderer;
 
 	const uint32_t WIDTH = 800;
@@ -110,12 +89,6 @@ private:
 	//当前使用的帧索引
 	uint32_t currentFrame = 0;
 
-	//顶点缓冲区
-	const std::string MODEL_PATH = "asserts/hutao/hutao.obj";
-	const std::string MTL_PATH = "asserts/hutao";
-	std::vector<Vertex> vertices;
-	std::vector<uint32_t> indices;
-
 	//深度缓冲
 	VkImage depthImage;
 	VkDeviceMemory depthImageMemory;
@@ -128,11 +101,8 @@ private:
 	VkDeviceMemory resolveImageMemory;
 	
 	//统一缓冲区
-	std::vector<VkBuffer> uniformBuffers;
-	std::vector<VkDeviceMemory> uniformBuffersMemory;
-	std::vector<void*> uniformBuffersMapped;
 	VkDescriptorPool descriptorPool;
-	std::vector<VkDescriptorSet> descriptorSets;
+	std::vector<std::vector<VkDescriptorSet>> descriptorSets;
 
 	//显示器抽象
 	VkSurfaceKHR surface;
@@ -311,47 +281,6 @@ private:
 	}
 
 
-	//更新统一缓冲区
-	void updateUniformBuffer(uint32_t currentImage) {
-		static auto startTime = std::chrono::high_resolution_clock::now();
-
-		auto currentTime = std::chrono::high_resolution_clock::now();
-		float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
-
-		UniformBufferObject ubo{};
-
-		// 归一化后模型已经在[-1,1]范围内，所以不需要太大的缩放
-		float scale = 0.8f;  // 可以调整此值，但不需要太小
-
-		// 创建缩放矩阵
-		glm::mat4 scaleMatrix = glm::scale(glm::mat4(1.0f), glm::vec3(scale, scale, scale));
-
-		// 创建Y轴旋转矩阵，使模型随时间旋转
-		glm::mat4 dynamicRotation = glm::rotate(glm::mat4(1.0f), time * glm::radians(20.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-
-		// 组合变换
-		ubo.model = dynamicRotation * scaleMatrix;
-
-		// 调整相机位置，使可以看到整个模型
-		ubo.view = glm::lookAt(
-			glm::vec3(0.0f, 0.0f, 3.0f),   // 相机位置，离原点有一定距离
-			glm::vec3(0.0f, 0.0f, 0.0f),   // 看向原点
-			glm::vec3(0.0f, 1.0f, 0.0f)    // 上方向是Y轴正方向
-		);
-
-		// 透视投影，使用较小的视场角
-		ubo.proj = glm::perspective(
-			glm::radians(37.0f),                                   // 视场角
-			swapChainExtent.width / (float)swapChainExtent.height, // 宽高比
-			0.1f,                                                  // 近平面
-			10.0f                                                  // 远平面
-		);
-
-		ubo.proj[1][1] *= -1; // 翻转Y轴，适应Vulkan
-
-		memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
-	}
-
 	//在某些情况下，您可能需要重新创建交换链，例如，当窗口大小发生变化时。
 	void recreateSwapChain() {
 		int width = 0, height = 0;
@@ -473,14 +402,12 @@ private:
 		createResolveResources();
 
 		createFramebuffers();
-		createTextureImage("textures/texture.jpg",textureImage,textureImageMemory,textureImageView);
-		createTextureImageView();
 		createTextureSampler();
 
-		loadModel();
-		createVertexAndIndexBuffers();
-		
-		createUniformBuffers();
+		loadModels();
+		createVulkanBuffersForMeshes();
+		createVulkanMaterials();
+		createPerObjectUniformBuffers();
 		createDescriptorPool();
 		createDescriptorSets();
 		createCommandBuffers();
@@ -493,10 +420,40 @@ private:
 		renderer->initialize();
 	}
 
-	// 为材质创建采样器
-	void createSamplerForMaterial(Material& material) {
+	void createVulkanMaterials() {
+		vulkanMaterials.resize(meshObjects.size());
+
+		for (size_t i = 0; i < meshObjects.size(); i++) {
+			const auto& meshObject = meshObjects[i];
+			const auto& materials = meshObject.getMaterials();
+
+			vulkanMaterials[i].resize(materials.size());
+			for (size_t j = 0; j < materials.size(); j++) {
+				const auto& material = materials[j];
+				VulkanMaterial vulkanMaterial;
+
+				// 加载纹理
+				if (!material.texturePath.empty()) {
+					createTextureImage(material.texturePath, vulkanMaterial.diffuseTexture,
+						vulkanMaterial.diffuseTextureMemory, vulkanMaterial.diffuseImageView);
+				}
+				else {
+					// 使用默认纹理
+					vulkanMaterial.diffuseTexture = textureImage;
+					vulkanMaterial.diffuseTextureMemory = textureImageMemory;
+					vulkanMaterial.diffuseImageView = textureImageView;
+				}
+
+				// 创建采样器
+				createSamplerForMaterial(vulkanMaterial);
+
+				vulkanMaterials[i][j] = std::move(vulkanMaterial);
+			}
+		}
+	}
+
+	void createSamplerForMaterial(VulkanMaterial& material) {
 		SamplerBuilder samplerBuilder(physicalDevice);
-		// 检查设备是否支持各向异性过滤
 		VkPhysicalDeviceFeatures features{};
 		vkGetPhysicalDeviceFeatures(physicalDevice, &features);
 
@@ -513,51 +470,139 @@ private:
 				.setAddressMode(VK_SAMPLER_ADDRESS_MODE_REPEAT)
 				.build(device);
 		}
-		
 	}
+	// 加载多个模型
+	void loadModels() {
+		std::vector<std::pair<std::string, std::string>> modelPaths = {
+			{"asserts/hutao/hutao.obj", "asserts/hutao"},
+		};
 
-	void loadModel() {
-		ModelLoader modelLoader;
-		modelLoader.loadModel(MODEL_PATH, MTL_PATH);
+		for (const auto& [modelPath, materialPath] : modelPaths) {
+			ModelLoader modelLoader;
+			if (!modelLoader.loadModel(modelPath, materialPath)) {
+				throw std::runtime_error("Failed to load model: " + modelPath);
+			}
 
-		// 从 ModelLoader 获取网格和材质
-		meshes = modelLoader.getMeshes();
-		const auto& loadedMaterials = modelLoader.getMaterials();
-		
-		// 加载材质
-		materials.resize(loadedMaterials.size());
-		for (size_t i = 0; i < loadedMaterials.size(); i++) {
-			const auto& mat = loadedMaterials[i];
-			materials[i].name = mat.name;
-			materials[i].diffuseColor = mat.diffuseColor;
+			// 创建 MeshObject
+			MeshObject meshObject(modelLoader.getMeshes(), modelLoader.getMaterials());
 
-			if (!mat.texturePath.empty()) {
-				try {
-					//std::cout << "Loading texture: " << mat.texturePath << std::endl;
-					createTextureImage(mat.texturePath, materials[i].diffuseTexture,
-						materials[i].diffuseTextureMemory, materials[i].diffuseImageView);
-					createSamplerForMaterial(materials[i]);
-				}
-				catch (const std::exception& e) {
-					std::cerr << "Failed to load texture '" << mat.texturePath << "': " << e.what() << std::endl;
-					// 使用默认纹理
-					materials[i].diffuseTexture = textureImage;
-					materials[i].diffuseImageView = textureImageView;
-					materials[i].textureSampler = textureSampler;
-				}
+			// 设置初始变换矩阵（可根据需要调整）
+			if (meshObjects.empty()) {
+				meshObject.translate(glm::vec3(0.0f, 0.0f, 0.0f)); // 第一个模型
 			}
 			else {
-				// 如果没有纹理，使用默认纹理
-				materials[i].diffuseTexture = textureImage;
-				materials[i].diffuseImageView = textureImageView;
-				materials[i].textureSampler = textureSampler;
+				meshObject.translate(glm::vec3(meshObjects.size() * 2.0f, 0.0f, 0.0f)); // 后续模型
 			}
+
+			meshObjects.push_back(std::move(meshObject));
 		}
-		
-		/*std::cout << "Model loaded with " << meshes.size() << " meshes and "
-			<< materials.size() << " materials." << std::endl;*/
 	}
 
+
+
+	void createVulkanBuffersForMeshes() {
+		vulkanMeshes.resize(meshObjects.size());
+
+		for (size_t i = 0; i < meshObjects.size(); i++) {
+			const auto& meshObject = meshObjects[i];
+			const auto& meshes = meshObject.getMeshes();
+
+			std::vector<Vertex> allVertices;
+			std::vector<uint32_t> allIndices;
+
+			// 记录每个 Mesh 的绘制信息
+			
+			std::vector<MeshDrawInfo> meshDrawInfos;
+
+			for (const auto& mesh : meshes) {
+				MeshDrawInfo drawInfo{};
+				drawInfo.indexOffset = static_cast<uint32_t>(allIndices.size());
+				drawInfo.indexCount = static_cast<uint32_t>(mesh.indices.size());
+				drawInfo.materialIndex = mesh.materialIndex;
+
+				// 合并顶点数据
+				uint32_t vertexOffset = static_cast<uint32_t>(allVertices.size());
+				allVertices.insert(allVertices.end(), mesh.vertices.begin(), mesh.vertices.end());
+
+				// 合并索引数据，并调整索引偏移
+				for (uint32_t index : mesh.indices) {
+					allIndices.push_back(index + vertexOffset);
+				}
+
+				meshDrawInfos.push_back(drawInfo);
+			}
+
+			// 创建统一的顶点缓冲区
+			VkDeviceSize vertexBufferSize = sizeof(Vertex) * allVertices.size();
+			createBuffer(vertexBufferSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vulkanMeshes[i].vertexBuffer, vulkanMeshes[i].vertexBufferMemory);
+			uploadDataToBuffer(allVertices.data(), vertexBufferSize, vulkanMeshes[i].vertexBuffer);
+
+			// 创建统一的索引缓冲区
+			VkDeviceSize indexBufferSize = sizeof(uint32_t) * allIndices.size();
+			createBuffer(indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vulkanMeshes[i].indexBuffer, vulkanMeshes[i].indexBufferMemory);
+			uploadDataToBuffer(allIndices.data(), indexBufferSize, vulkanMeshes[i].indexBuffer);
+
+			// 保存绘制信息
+			vulkanMeshes[i].materialDrawInfos = std::move(meshDrawInfos);
+		}
+	}
+
+
+	// 创建每个物体的统一缓冲区
+	void createPerObjectUniformBuffers() {
+		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+
+		perObjectUniformBuffers.resize(meshObjects.size());
+		for (size_t i = 0; i < meshObjects.size(); i++) {
+			perObjectUniformBuffers[i].buffers.resize(MAX_FRAMES_IN_FLIGHT);
+			perObjectUniformBuffers[i].memories.resize(MAX_FRAMES_IN_FLIGHT);
+			perObjectUniformBuffers[i].mapped.resize(MAX_FRAMES_IN_FLIGHT);
+
+			for (size_t j = 0; j < MAX_FRAMES_IN_FLIGHT; j++) {
+				createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+					perObjectUniformBuffers[i].buffers[j],
+					perObjectUniformBuffers[i].memories[j]);
+
+				vkMapMemory(device, perObjectUniformBuffers[i].memories[j], 0, bufferSize, 0,
+					&perObjectUniformBuffers[i].mapped[j]);
+			}
+		}
+	}
+
+	// 更新统一缓冲区
+	void updateUniformBuffer(uint32_t currentImage) {
+		static auto startTime = std::chrono::high_resolution_clock::now();
+		auto currentTime = std::chrono::high_resolution_clock::now();
+		float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+
+		for (size_t i = 0; i < meshObjects.size(); i++) {
+			UniformBufferObject ubo{};
+
+			// 计算旋转角度（5秒完成一圈）
+			float rotationAngle = glm::radians(360.0f) * (fmod(time, 10.0f) / 10.0f);
+
+			// 应用旋转变换
+			glm::mat4 rotationMatrix = glm::rotate(glm::mat4(1.0f), rotationAngle, glm::vec3(0.0f, 1.0f, 0.0f));
+			ubo.model = rotationMatrix * meshObjects[i].getModelMatrix();
+			ubo.view = glm::lookAt(
+				glm::vec3(0.0f, 0.0f, 3.0f),   // 相机位置
+				glm::vec3(0.0f, 0.0f, 0.0f),   // 目标位置
+				glm::vec3(0.0f, 1.0f, 0.0f)    // 上方向
+			);
+			ubo.proj = glm::perspective(
+				glm::radians(37.0f),                                   // 视场角
+				swapChainExtent.width / (float)swapChainExtent.height, // 宽高比
+				0.1f,                                                  // 近平面
+				10.0f                                                  // 远平面
+			);
+			ubo.proj[1][1] *= -1; // 翻转 Y 轴
+
+			memcpy(perObjectUniformBuffers[i].mapped[currentImage], &ubo, sizeof(ubo));
+		}
+	}
 
 	void createDepthResources() {
 		VkFormat depthFormat = findDepthFormat();
@@ -625,10 +670,6 @@ private:
 			VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
 		);
 	}
-
-	
-
-	
 
 	//创建采样器
 	void createTextureSampler() {
@@ -732,111 +773,77 @@ private:
 	}
 
 	void createDescriptorSets() {
-		// 创建全局 UBO 描述符集
-		std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, descriptorSetLayout);
-		VkDescriptorSetAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		allocInfo.descriptorPool = descriptorPool;
-		allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
-		allocInfo.pSetLayouts = layouts.data();
+		descriptorSets.resize(meshObjects.size());
+		for (size_t i = 0; i < meshObjects.size(); i++) {
+			const auto& meshObject = meshObjects[i];
+			const auto& materials = meshObject.getMaterials();
 
-		descriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
-		if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data()) != VK_SUCCESS) {
-			throw std::runtime_error("failed to allocate descriptor sets!");
-		}
+			descriptorSets[i].resize(materials.size(), VK_NULL_HANDLE); // 初始化为 VK_NULL_HANDLE
+			// 为每个材质创建描述符集
+			for (size_t j = 0; j < materials.size(); j++) {
+				// 获取材质信息
+				auto& vulkanMaterial = vulkanMaterials[i][j];
 
-		// 更新 UBO 描述符集
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-			VkDescriptorBufferInfo bufferInfo{};
-			bufferInfo.buffer = uniformBuffers[i];
-			bufferInfo.offset = 0;
-			bufferInfo.range = sizeof(UniformBufferObject);
+				VkDescriptorSetAllocateInfo allocInfo{};
+				allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+				allocInfo.descriptorPool = descriptorPool;
+				allocInfo.descriptorSetCount = 1;
+				allocInfo.pSetLayouts = &descriptorSetLayout;
 
-			// 图像信息可以使用默认纹理（如果有）
-			VkDescriptorImageInfo imageInfo{};
-			imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			imageInfo.imageView = textureImageView;  // 使用默认纹理
-			imageInfo.sampler = textureSampler;      // 使用默认采样器
+				VkResult result = vkAllocateDescriptorSets(device, &allocInfo, &descriptorSets[i][j]);
+				if (result != VK_SUCCESS) {
+					std::cerr << "Failed to allocate descriptor set for material " << j << " of mesh " << i << std::endl;
+					descriptorSets[i][j] = VK_NULL_HANDLE; // 确保无效的句柄被标记
+					continue;
+				}
 
-			std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+				VkDescriptorBufferInfo bufferInfo{};
+				bufferInfo.buffer = perObjectUniformBuffers[i].buffers[0];
+				bufferInfo.offset = 0;
+				bufferInfo.range = sizeof(UniformBufferObject);
 
-			descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[0].dstSet = descriptorSets[i];
-			descriptorWrites[0].dstBinding = 0;
-			descriptorWrites[0].dstArrayElement = 0;
-			descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			descriptorWrites[0].descriptorCount = 1;
-			descriptorWrites[0].pBufferInfo = &bufferInfo;
+				VkDescriptorImageInfo imageInfo{};
+				imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				imageInfo.imageView = vulkanMaterial.diffuseImageView;
+				imageInfo.sampler = vulkanMaterial.textureSampler;
 
-			descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[1].dstSet = descriptorSets[i];
-			descriptorWrites[1].dstBinding = 1;
-			descriptorWrites[1].dstArrayElement = 0;
-			descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			descriptorWrites[1].descriptorCount = 1;
-			descriptorWrites[1].pImageInfo = &imageInfo;
+				std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
 
-			vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()),
-				descriptorWrites.data(), 0, nullptr);
-		}
+				descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+				descriptorWrites[0].dstSet = descriptorSets[i][j];
+				descriptorWrites[0].dstBinding = 0;
+				descriptorWrites[0].dstArrayElement = 0;
+				descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+				descriptorWrites[0].descriptorCount = 1;
+				descriptorWrites[0].pBufferInfo = &bufferInfo;
 
-		// 为每个材质创建描述符集
-		for (size_t i = 0; i < materials.size(); i++) {
-			Material& material = materials[i];
+				descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+				descriptorWrites[1].dstSet = descriptorSets[i][j];
+				descriptorWrites[1].dstBinding = 1;
+				descriptorWrites[1].dstArrayElement = 0;
+				descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+				descriptorWrites[1].descriptorCount = 1;
+				descriptorWrites[1].pImageInfo = &imageInfo;
 
-			VkDescriptorSetAllocateInfo materialAllocInfo{};
-			materialAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-			materialAllocInfo.descriptorPool = descriptorPool;
-			materialAllocInfo.descriptorSetCount = 1;
-			materialAllocInfo.pSetLayouts = &descriptorSetLayout;
-
-			if (vkAllocateDescriptorSets(device, &materialAllocInfo, &material.descriptorSet) != VK_SUCCESS) {
-				throw std::runtime_error("failed to allocate material descriptor set!");
+				vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()),
+					descriptorWrites.data(), 0, nullptr);
+				vulkanMaterial.descriptorSet = descriptorSets[i][j]; // 将描述符集存储在材质中
 			}
-
-			// 更新材质的描述符集
-			VkDescriptorBufferInfo bufferInfo{};
-			bufferInfo.buffer = uniformBuffers[0];  // 使用第一个 UBO
-			bufferInfo.offset = 0;
-			bufferInfo.range = sizeof(UniformBufferObject);
-
-			VkDescriptorImageInfo imageInfo{};
-			imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			// 如果材质有纹理，使用材质的纹理，否则使用默认纹理
-			imageInfo.imageView = material.diffuseImageView != VK_NULL_HANDLE ?
-				material.diffuseImageView : textureImageView;
-			imageInfo.sampler = material.textureSampler != VK_NULL_HANDLE ?
-				material.textureSampler : textureSampler;
-
-			std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
-
-			descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[0].dstSet = material.descriptorSet;
-			descriptorWrites[0].dstBinding = 0;
-			descriptorWrites[0].dstArrayElement = 0;
-			descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			descriptorWrites[0].descriptorCount = 1;
-			descriptorWrites[0].pBufferInfo = &bufferInfo;
-
-			descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[1].dstSet = material.descriptorSet;
-			descriptorWrites[1].dstBinding = 1;
-			descriptorWrites[1].dstArrayElement = 0;
-			descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			descriptorWrites[1].descriptorCount = 1;
-			descriptorWrites[1].pImageInfo = &imageInfo;
-			//std::cout << "material descriptor set created" << material.name << std::endl;
-			vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()),
-				descriptorWrites.data(), 0, nullptr);
 		}
 	}
 
 	//创建描述符池
 	void createDescriptorPool() {
-		// 计算所需的描述符数量，确保足够大
-		uint32_t uniformBufferCount = MAX_FRAMES_IN_FLIGHT + materials.size();  // 每个材质一个，每帧一个
-		uint32_t samplerCount = MAX_FRAMES_IN_FLIGHT + materials.size();        // 每个材质一个，每帧一个
-		uint32_t maxSets = MAX_FRAMES_IN_FLIGHT + materials.size();             // 每个材质一个，每帧一个
+		// 计算所需的描述符数量
+		uint32_t uniformBufferCount = 0;
+		uint32_t samplerCount = 0;
+
+		for (const auto& materials : vulkanMaterials) {
+			uniformBufferCount += materials.size();
+			samplerCount += materials.size();
+		}
+
+		uint32_t maxSets = uniformBufferCount; // 每个材质对应一个描述符集
 
 		std::array<VkDescriptorPoolSize, 2> poolSizes{};
 		poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -857,23 +864,6 @@ private:
 			throw std::runtime_error("failed to create descriptor pool!");
 		}
 	}
-
-	//创建统一缓冲区
-	void createUniformBuffers() {
-		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
-
-		uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
-		uniformBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
-		uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
-
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-			createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uniformBuffers[i], uniformBuffersMemory[i]);
-
-			//映射内存到应用程序地址空间，	这在程序运行时只需要做一次，后续只需要更新数据即可
-			vkMapMemory(device, uniformBuffersMemory[i], 0, bufferSize, 0, &uniformBuffersMapped[i]);
-		}
-	}
-
 
 	//创建着色器布局
 	void createDescriptorSetLayout() {
@@ -951,54 +941,22 @@ private:
 	}
 
 
-	void createVertexAndIndexBuffers() {
-		vertexBuffers.resize(meshes.size());
-		vertexBufferMemories.resize(meshes.size());
-		indexBuffers.resize(meshes.size());
-		indexBufferMemories.resize(meshes.size());
+	void uploadDataToBuffer(const void* data, VkDeviceSize size, VkBuffer buffer) {
+		VkBuffer stagingBuffer;
+		VkDeviceMemory stagingBufferMemory;
+		createBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			stagingBuffer, stagingBufferMemory);
 
-		for (size_t i = 0; i < meshes.size(); i++) {
-			// 创建顶点缓冲区
-			VkDeviceSize vertexBufferSize = sizeof(Vertex) * meshes[i].vertices.size();
+		void* mappedData;
+		vkMapMemory(device, stagingBufferMemory, 0, size, 0, &mappedData);
+		memcpy(mappedData, data, static_cast<size_t>(size));
+		vkUnmapMemory(device, stagingBufferMemory);
 
-			VkBuffer stagingBuffer;
-			VkDeviceMemory stagingBufferMemory;
-			createBuffer(vertexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-				stagingBuffer, stagingBufferMemory);
+		copyBuffer(stagingBuffer, buffer, size);
 
-			void* data;
-			vkMapMemory(device, stagingBufferMemory, 0, vertexBufferSize, 0, &data);
-			memcpy(data, meshes[i].vertices.data(), (size_t)vertexBufferSize);
-			vkUnmapMemory(device, stagingBufferMemory);
-
-			createBuffer(vertexBufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertexBuffers[i], vertexBufferMemories[i]);
-
-			copyBuffer(stagingBuffer, vertexBuffers[i], vertexBufferSize);
-
-			vkDestroyBuffer(device, stagingBuffer, nullptr);
-			vkFreeMemory(device, stagingBufferMemory, nullptr);
-
-			// 创建索引缓冲区
-			VkDeviceSize indexBufferSize = sizeof(uint32_t) * meshes[i].indices.size();
-
-			createBuffer(indexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-				stagingBuffer, stagingBufferMemory);
-
-			vkMapMemory(device, stagingBufferMemory, 0, indexBufferSize, 0, &data);
-			memcpy(data, meshes[i].indices.data(), (size_t)indexBufferSize);
-			vkUnmapMemory(device, stagingBufferMemory);
-
-			createBuffer(indexBufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, indexBuffers[i], indexBufferMemories[i]);
-
-			copyBuffer(stagingBuffer, indexBuffers[i], indexBufferSize);
-
-			vkDestroyBuffer(device, stagingBuffer, nullptr);
-			vkFreeMemory(device, stagingBufferMemory, nullptr);
-		}
+		vkDestroyBuffer(device, stagingBuffer, nullptr);
+		vkFreeMemory(device, stagingBufferMemory, nullptr);
 	}
 
 	//创建命令缓冲区
@@ -1062,36 +1020,24 @@ private:
 		scissor.extent = swapChainExtent;
 		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-		// 绑定全局 UBO
-		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-			renderer->getPipelineLayout(), 0, 1,
-			&descriptorSets[currentFrame], 0, nullptr);
+		for (size_t i = 0; i < meshObjects.size(); i++) {
+			const auto& vulkanMesh = vulkanMeshes[i];
 
-		// 对每个网格进行绘制
-		for (size_t i = 0; i < meshes.size(); i++) {
-			const ModelLoader::Mesh& mesh = meshes[i];
-
-			// 绑定顶点缓冲区
-			VkBuffer vertexBufferHandls[] = { vertexBuffers[i] };
+			// 绑定统一的顶点缓冲区和索引缓冲区
 			VkDeviceSize offsets[] = { 0 };
-			vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBufferHandls, offsets);
+			vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vulkanMesh.vertexBuffer, offsets);
+			vkCmdBindIndexBuffer(commandBuffer, vulkanMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-			// 绑定索引缓冲区
-			vkCmdBindIndexBuffer(commandBuffer, indexBuffers[i], 0, VK_INDEX_TYPE_UINT32);
+			// 绘制每个 Mesh
+			for (const auto& drawInfo : vulkanMesh.materialDrawInfos) {
+				// 绑定对应的材质描述集
+				vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+					renderer->getPipelineLayout(), 0, 1,
+					&descriptorSets[i][drawInfo.materialIndex], 0, nullptr);
 
-			// 如果网格有有效的材质，绑定材质的描述符集
-			if (mesh.materialIndex >= 0 && mesh.materialIndex < materials.size()) {
-				Material& material = materials[mesh.materialIndex];
-				if (material.descriptorSet != VK_NULL_HANDLE) {
-					vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-						renderer->getPipelineLayout(), 0, 1,
-						&material.descriptorSet, 0, nullptr);
-				}
-				//std::cout << "mesh drawed   " << material.name << std::endl;
+				// 绘制当前 Mesh
+				vkCmdDrawIndexed(commandBuffer, drawInfo.indexCount, 1, drawInfo.indexOffset, 0, 0);
 			}
-			//std::cout << "mesh drawed   " << mesh.materialIndex << std::endl;
-			// 绘制网格
-			vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(mesh.indices.size()), 1, 0, 0, 0);
 		}
 
 		vkCmdEndRenderPass(commandBuffer);
@@ -1577,45 +1523,38 @@ private:
 		vkDestroyImage(device, textureImage, nullptr);
 		vkFreeMemory(device, textureImageMemory, nullptr);
 
-		// 清理索引缓冲区
-		for (size_t i = 0; i < indexBuffers.size(); i++) {
-			vkDestroyBuffer(device, indexBuffers[i], nullptr);
-			vkFreeMemory(device, indexBufferMemories[i], nullptr);
+		// 销毁 Vulkan 材质资源
+		for (const auto& materialList : vulkanMaterials) {
+			for (const auto& material : materialList) {
+				if (material.descriptorSet != VK_NULL_HANDLE) {
+					vkFreeDescriptorSets(device, descriptorPool, 1, &material.descriptorSet);
+				}
+				if (material.textureSampler != VK_NULL_HANDLE) {
+					vkDestroySampler(device, material.textureSampler, nullptr);
+				}
+				if (material.diffuseImageView != VK_NULL_HANDLE) {
+					vkDestroyImageView(device, material.diffuseImageView, nullptr);
+				}
+				if (material.diffuseTexture != VK_NULL_HANDLE) {
+					vkDestroyImage(device, material.diffuseTexture, nullptr);
+				}
+				if (material.diffuseTextureMemory != VK_NULL_HANDLE) {
+					vkFreeMemory(device, material.diffuseTextureMemory, nullptr);
+				}
+			}
 		}
 
-		// 清理顶点缓冲区
-		for (size_t i = 0; i < vertexBuffers.size(); i++) {
-			vkDestroyBuffer(device, vertexBuffers[i], nullptr);
-			vkFreeMemory(device, vertexBufferMemories[i], nullptr);
+		for (const auto& mesh : vulkanMeshes) {
+			vkDestroyBuffer(device, mesh.vertexBuffer, nullptr);
+			vkFreeMemory(device, mesh.vertexBufferMemory, nullptr);
+			vkDestroyBuffer(device, mesh.indexBuffer, nullptr);
+			vkFreeMemory(device, mesh.indexBufferMemory, nullptr);
 		}
 
-		// 确保所有材质资源都被正确释放
-		for (auto& material : materials) {
-			if (material.descriptorSet != VK_NULL_HANDLE) {
-				vkFreeDescriptorSets(device, descriptorPool, 1, &material.descriptorSet);
-				material.descriptorSet = VK_NULL_HANDLE;
-			}
-
-			if (material.textureSampler != VK_NULL_HANDLE) {
-				vkDestroySampler(device, material.textureSampler, nullptr);
-				material.textureSampler = VK_NULL_HANDLE;
-			}
-
-			if (material.diffuseImageView != VK_NULL_HANDLE) {
-				//std::cout << "Destroying VkImageView: " << material.diffuseImageView << std::endl;
-				vkDestroyImageView(device, material.diffuseImageView, nullptr);
-				material.diffuseImageView = VK_NULL_HANDLE;
-
-			}
-
-			if (material.diffuseTexture != VK_NULL_HANDLE) {
-				vkDestroyImage(device, material.diffuseTexture, nullptr);
-				material.diffuseTexture = VK_NULL_HANDLE;
-			}
-
-			if (material.diffuseTextureMemory != VK_NULL_HANDLE) {
-				vkFreeMemory(device, material.diffuseTextureMemory, nullptr);
-				material.diffuseTextureMemory = VK_NULL_HANDLE;
+		for (const auto& uniformBuffer : perObjectUniformBuffers) {
+			for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+				vkDestroyBuffer(device, uniformBuffer.buffers[i], nullptr);
+				vkFreeMemory(device, uniformBuffer.memories[i], nullptr);
 			}
 		}
 
@@ -1647,10 +1586,7 @@ private:
 			resolveImageMemory = VK_NULL_HANDLE;
 		}
 
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-			vkDestroyBuffer(device, uniformBuffers[i], nullptr);
-			vkFreeMemory(device, uniformBuffersMemory[i], nullptr);
-		}
+		
 
 		vkDestroyDescriptorPool(device, descriptorPool, nullptr);
 
@@ -1825,7 +1761,7 @@ int main() {
 
 	HelloTriangleApplication app;
 	try {
-		app.getExtensions();
+		
 		app.run();
 	}
 	catch (const std::exception& e) {

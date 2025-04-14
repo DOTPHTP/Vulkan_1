@@ -149,6 +149,7 @@
     <None Include="shaders\编译.bat" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="MeshObject.h" />
     <ClInclude Include="ModelLoader.h" />
     <ClInclude Include="Render.h" />
     <ClInclude Include="SamplerBuilder.h" />
