@@ -19,9 +19,13 @@ public:
     };
 
     struct Material {
-        glm::vec3 diffuseColor;
-        std::string name;
-        std::string texturePath;
+        glm::vec3 ambientColor;   // Ka: 环境光反射系数
+        glm::vec3 diffuseColor;   // Kd: 漫反射系数
+        glm::vec3 specularColor;  // Ks: 镜面反射系数
+        float shininess;          // Ns: 镜面高光指数
+        float opacity;            // d: 透明度
+        std::string name;         // 材质名称
+        std::string texturePath;  // 纹理路径
     };
 
     // 加载单个模型
@@ -71,9 +75,17 @@ private:
         if (tinyMaterials.empty()) {
             tinyobj::material_t defaultMaterial;
             defaultMaterial.name = "default";
-            defaultMaterial.diffuse[0] = 0.8f;
+            defaultMaterial.ambient[0] = 0.2f;  // 默认环境光
+            defaultMaterial.ambient[1] = 0.2f;
+            defaultMaterial.ambient[2] = 0.2f;
+            defaultMaterial.diffuse[0] = 0.8f;  // 默认漫反射
             defaultMaterial.diffuse[1] = 0.8f;
             defaultMaterial.diffuse[2] = 0.8f;
+            defaultMaterial.specular[0] = 0.0f; // 默认镜面反射
+            defaultMaterial.specular[1] = 0.0f;
+            defaultMaterial.specular[2] = 0.0f;
+            defaultMaterial.shininess = 1.0f;   // 默认高光指数
+            defaultMaterial.dissolve = 1.0f;    // 默认不透明
             tinyMaterials.push_back(defaultMaterial);
         }
 
@@ -91,8 +103,25 @@ private:
 
         for (size_t i = 0; i < tinyMaterials.size(); i++) {
             const auto& mat = tinyMaterials[i];
-            materials[startIdx + i].name = mat.name;
-            materials[startIdx + i].diffuseColor = glm::vec3(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2]);
+            Material& material = materials[startIdx + i];
+
+            // 材质名称
+            material.name = mat.name;
+
+            // 环境光反射系数 (Ka)
+            material.ambientColor = glm::vec3(mat.ambient[0], mat.ambient[1], mat.ambient[2]);
+
+            // 漫反射系数 (Kd)
+            material.diffuseColor = glm::vec3(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2]);
+
+            // 镜面反射系数 (Ks)
+            material.specularColor = glm::vec3(mat.specular[0], mat.specular[1], mat.specular[2]);
+
+            // 镜面高光指数 (Ns)
+            material.shininess = mat.shininess;
+
+            // 透明度 (d)
+            material.opacity = mat.dissolve;
 
             if (!mat.diffuse_texname.empty()) {
                 // 尝试构建纹理路径，处理绝对路径和相对路径
@@ -102,7 +131,7 @@ private:
                 }
 
                 if (std::filesystem::exists(texPath)) {
-                    materials[startIdx + i].texturePath = texPath;
+                    material.texturePath = texPath;
                 }
                 else {
                     std::cerr << "Warning: Texture file not found: " << texPath << std::endl;

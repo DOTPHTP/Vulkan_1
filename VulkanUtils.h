@@ -222,5 +222,8 @@ public:
         throw std::runtime_error("Failed to find suitable memory type!");
     }
 
-	
+	// ¶ÔÆëÆ«ÒÆÁ¿
+    static VkDeviceSize alignOffset(VkDeviceSize offset, VkDeviceSize alignment) {
+        return (offset + alignment - 1) & ~(alignment - 1);
+    }
 };

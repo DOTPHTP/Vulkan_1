@@ -15,9 +15,10 @@ layout(binding = 0) uniform UniformBufferObject {
 } ubo;
 
 void main() {
+    
     vec4 worldPosition = ubo.model * vec4(inPosition, 1.0);
     gl_Position = ubo.proj * ubo.view * worldPosition;
-
+    gl_Position.y = -gl_Position.y; // Vulkan需要翻转Y轴
     fragColor = inColor;
     fragTexCoord = inTexCoord;
     fragNormal = mat3(transpose(inverse(ubo.model))) * inNormal; // 法线转换到世界空间

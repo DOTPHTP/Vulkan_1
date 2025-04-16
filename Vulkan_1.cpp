@@ -11,6 +11,8 @@
 #include "Render.h"
 #include "SamplerBuilder.h"
 #include "VulkanUtils.h"
+#include "Camera.h"
+#include "LightSource.h"
 #include <stb_image.h>
 #include <chrono>
 #include <cstdlib>
@@ -31,6 +33,19 @@ struct UniformBufferObject {
 	glm::mat4 model;
 	glm::mat4 view;
 	glm::mat4 proj;
+};
+
+struct UniformBufferMaterial {
+	glm::vec4 ambient;   // Ka: 环境光反射系数
+	glm::vec4 diffuse;   // Kd: 漫反射系数
+	glm::vec4 specular;  // Ks: 镜面反射系数
+	float shininess;          // Ns: 镜面高光指数
+	float opacity;
+};
+struct UniformBufferLight {
+	glm::vec4 lightPosition; // 光源位置
+	glm::vec4 lightColor;    // 光源颜色
+	float lightIntensity;    // 光源强度
 };
 
 class HelloTriangleApplication {
@@ -68,12 +83,19 @@ private:
 		std::vector<void*> mapped;
 	};
 
+
+	Camera camera{ glm::vec3(0.0f, 1.0f, 3.5f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f), 37.0f, WIDTH / (float)HEIGHT, 0.1f, 10.0f };
+
+
 	std::vector<MeshObject> meshObjects; // 存储逻辑层的网格体
 	std::vector<VulkanMesh> vulkanMeshes; // 存储 Vulkan 相关的网格体缓冲
 	std::vector<PerObjectUniformBuffer> perObjectUniformBuffers; // 每个物体的统一缓冲区
 	std::vector<std::vector<VulkanMaterial>> vulkanMaterials; // 存储 Vulkan 相关的材质
 	// 定义一个网格结构体，代表模型的一部分
 	
+	LightSource light{ LightSource::LightType::Point, glm::vec3(0.0f, 1.5f, -3.0f), glm::vec3(1.0f, 1.0f, 1.0f), 5.0f };
+
+
 	Render<Vertex>* renderer;
 
 	const uint32_t WIDTH = 800;
@@ -83,6 +105,7 @@ private:
 	VkInstance instance;
 	//物理设备,即显卡,该设备在销毁实例时会自动销毁
 	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+	size_t minimumUboAlignment = 0;
 	//调试回调函数
 	VkDebugUtilsMessengerEXT debugMessenger;
 
@@ -100,7 +123,7 @@ private:
 	VkImage resolveImage;
 	VkDeviceMemory resolveImageMemory;
 	
-	//统一缓冲区
+	//着色器描述符，每个不同的材质都需要一个描述符
 	VkDescriptorPool descriptorPool;
 	std::vector<std::vector<VkDescriptorSet>> descriptorSets;
 
@@ -217,6 +240,7 @@ private:
 		vkResetFences(device, 1, &inFlightFences[currentFrame]);
 
 		vkResetCommandBuffer(commandBuffers[currentFrame], 0);
+
 
 		recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
 		
@@ -405,6 +429,7 @@ private:
 		createTextureSampler();
 
 		loadModels();
+		initCamera();
 		createVulkanBuffersForMeshes();
 		createVulkanMaterials();
 		createPerObjectUniformBuffers();
@@ -517,6 +542,18 @@ private:
 	}
 
 
+	void initCamera() {
+		// 获取第一个物体的包围盒中心
+		glm::vec3 minBounds, maxBounds;
+		meshObjects[0].getBoundingBox(minBounds, maxBounds);
+		glm::vec3 modelCenter = (minBounds + maxBounds) * 0.5f;
+
+		// 调整相机的位置和目标点
+		glm::vec3 cameraPosition = modelCenter + glm::vec3(0.0f, 0.0f, 3.5f); // 距离目标物体 3.5 个单位
+		camera.reset(cameraPosition, modelCenter, glm::vec3(0.0f, 1.0f, 0.0f)); // 重置相机
+
+	}
+
 
 	void createVulkanBuffersForMeshes() {
 		vulkanMeshes.resize(meshObjects.size());
@@ -570,14 +607,20 @@ private:
 
 	// 创建每个物体的统一缓冲区
 	void createPerObjectUniformBuffers() {
-		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+		//这些是每个物体的统一缓冲区
+		VkDeviceSize bufferSize =
+			VulkanUtils::alignOffset(sizeof(UniformBufferObject), minimumUboAlignment) +
+			VulkanUtils::alignOffset(sizeof(UniformBufferLight), minimumUboAlignment)+ 
+			VulkanUtils::alignOffset(sizeof(glm::vec3), minimumUboAlignment);
 
 		perObjectUniformBuffers.resize(meshObjects.size());
 		for (size_t i = 0; i < meshObjects.size(); i++) {
-			perObjectUniformBuffers[i].buffers.resize(MAX_FRAMES_IN_FLIGHT);
-			perObjectUniformBuffers[i].memories.resize(MAX_FRAMES_IN_FLIGHT);
-			perObjectUniformBuffers[i].mapped.resize(MAX_FRAMES_IN_FLIGHT);
+			int materialCount = meshObjects[i].getMaterials().size();
+			perObjectUniformBuffers[i].buffers.resize(MAX_FRAMES_IN_FLIGHT + materialCount);
+			perObjectUniformBuffers[i].memories.resize(MAX_FRAMES_IN_FLIGHT + materialCount);
+			perObjectUniformBuffers[i].mapped.resize(MAX_FRAMES_IN_FLIGHT + materialCount);
 
+			//创建统一缓冲区
 			for (size_t j = 0; j < MAX_FRAMES_IN_FLIGHT; j++) {
 				createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -587,38 +630,82 @@ private:
 				vkMapMemory(device, perObjectUniformBuffers[i].memories[j], 0, bufferSize, 0,
 					&perObjectUniformBuffers[i].mapped[j]);
 			}
+
+			//创建材质统一缓冲区
+			// 这里的 materialCount 是材质数量
+			VkDeviceSize size = sizeof(UniformBufferMaterial);
+			for (int j = MAX_FRAMES_IN_FLIGHT; j < materialCount + MAX_FRAMES_IN_FLIGHT; j++) {
+				createBuffer(size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+					perObjectUniformBuffers[i].buffers[j],
+					perObjectUniformBuffers[i].memories[j]);
+				vkMapMemory(device, perObjectUniformBuffers[i].memories[j], 0, size, 0,
+					&perObjectUniformBuffers[i].mapped[j]);
+			}
+		}
+		//材质统一缓冲区只要更新一次就行
+		updateMaterialUniformBuffer();
+	}
+
+	void updateMaterialUniformBuffer() {
+		for (size_t i = 0; i < meshObjects.size(); i++) {
+			const auto materials = meshObjects[i].getMaterials();
+			
+			for (size_t j = 0; j < materials.size(); j++) {
+				//更新材质
+				UniformBufferMaterial uboMaterial{};
+				uboMaterial.ambient =glm::vec4(materials[j].ambientColor,1.0);
+				uboMaterial.diffuse = glm::vec4(materials[j].diffuseColor,1.0);
+				uboMaterial.specular = glm::vec4(materials[j].specularColor,1.0);
+				uboMaterial.shininess = materials[j].shininess;
+				uboMaterial.opacity = materials[j].opacity;
+				std::cout << "material: " << materials[j].diffuseColor.x << " " << materials[j].diffuseColor.y << " " << materials[j].diffuseColor.z << std::endl;
+				char* data = static_cast<char*>(perObjectUniformBuffers[i].mapped[MAX_FRAMES_IN_FLIGHT + j]);
+				memcpy(data, &uboMaterial, sizeof(uboMaterial));
+			}
 		}
 	}
 
 	// 更新统一缓冲区
 	void updateUniformBuffer(uint32_t currentImage) {
-		static auto startTime = std::chrono::high_resolution_clock::now();
+		static auto lastTime = std::chrono::high_resolution_clock::now();
 		auto currentTime = std::chrono::high_resolution_clock::now();
-		float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+		float deltaTime = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - lastTime).count();
+		lastTime = currentTime;
 
+		// 每秒旋转 36 度
+		float rotationSpeed = 36.0f; // 每秒旋转的角度
+		float rotationAngle = rotationSpeed * deltaTime;
+		camera.setAspectRatio(static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height));
+		camera.rotate(rotationAngle, glm::vec3(0.0f, 1.0f, 0.0f));
+		glm::mat4 viewMatrix = camera.getViewMatrix();
+		glm::mat4 projMatrix = camera.getProjectionMatrix();
 		for (size_t i = 0; i < meshObjects.size(); i++) {
+			char* data = static_cast<char*>(perObjectUniformBuffers[i].mapped[0]);
+
 			UniformBufferObject ubo{};
 
-			// 计算旋转角度（5秒完成一圈）
-			float rotationAngle = glm::radians(360.0f) * (fmod(time, 10.0f) / 10.0f);
+			ubo.model = meshObjects[i].getModelMatrix();
+			ubo.view = viewMatrix;
+			ubo.proj = projMatrix;
+			
+			memcpy(data, &ubo, sizeof(ubo));
+			data +=VulkanUtils::alignOffset(sizeof(ubo), minimumUboAlignment);
 
-			// 应用旋转变换
-			glm::mat4 rotationMatrix = glm::rotate(glm::mat4(1.0f), rotationAngle, glm::vec3(0.0f, 1.0f, 0.0f));
-			ubo.model = rotationMatrix * meshObjects[i].getModelMatrix();
-			ubo.view = glm::lookAt(
-				glm::vec3(0.0f, 0.0f, 5.0f),   // 相机位置
-				glm::vec3(0.0f, 0.0f, 0.0f),   // 目标位置
-				glm::vec3(0.0f, 1.0f, 0.0f)    // 上方向
-			);
-			ubo.proj = glm::perspective(
-				glm::radians(37.0f),                                   // 视场角
-				swapChainExtent.width / (float)swapChainExtent.height, // 宽高比
-				0.1f,                                                  // 近平面
-				10.0f                                                  // 远平面
-			);
-			ubo.proj[1][1] *= -1; // 翻转 Y 轴
+			//更新观察点
+			
+			glm::vec3 cameraPos = camera.getPosition();
+			memcpy(data, &cameraPos, sizeof(cameraPos));
+			data +=VulkanUtils::alignOffset(sizeof(cameraPos), minimumUboAlignment);
 
-			memcpy(perObjectUniformBuffers[i].mapped[currentImage], &ubo, sizeof(ubo));
+			UniformBufferLight l{};
+			l.lightPosition = glm::vec4(light.getPosition(),1.0);
+			l.lightColor = glm::vec4(light.getColor(),1.0);
+
+			l.lightIntensity = light.getIntensity();
+
+			// 更新光源信息
+			memcpy(data, &l, sizeof(UniformBufferLight));
 		}
 	}
 
@@ -630,7 +717,9 @@ private:
 			physicalDevice,
 			swapChainExtent.width, 
 			swapChainExtent.height, 
-			depthFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, renderer->getMaxUsableSampleCount(physicalDevice),
+			depthFormat, 
+			VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
+			renderer->getMaxUsableSampleCount(physicalDevice),
 			depthImage, depthImageMemory);
 		depthImageView =VulkanUtils:: createImageView(device,depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
 
@@ -814,18 +903,42 @@ private:
 					descriptorSets[i][j] = VK_NULL_HANDLE; // 确保无效的句柄被标记
 					continue;
 				}
+				VkDeviceSize offset = 0;
 
 				VkDescriptorBufferInfo bufferInfo{};
 				bufferInfo.buffer = perObjectUniformBuffers[i].buffers[0];
 				bufferInfo.offset = 0;
 				bufferInfo.range = sizeof(UniformBufferObject);
 
+				offset +=VulkanUtils::alignOffset(sizeof(UniformBufferObject), minimumUboAlignment);
+				
+				// 观察点位置
+				VkDescriptorBufferInfo eyeBufferInfo{};
+				eyeBufferInfo.buffer = perObjectUniformBuffers[i].buffers[0];
+				eyeBufferInfo.offset = offset;
+				eyeBufferInfo.range = sizeof(glm::vec3);
+
+				offset +=VulkanUtils::alignOffset(sizeof(glm::vec3), minimumUboAlignment);
+				// 材质属性
+				VkDescriptorBufferInfo materialBufferInfo{};
+				//材质缓冲区是每个材质都不一样的，所以不能用第一个。而是用当前材质的
+				materialBufferInfo.buffer = perObjectUniformBuffers[i].buffers[j + MAX_FRAMES_IN_FLIGHT];
+				materialBufferInfo.offset = 0;
+				materialBufferInfo.range = sizeof(UniformBufferMaterial);
+
+				// 光源属性
+				VkDescriptorBufferInfo lightBufferInfo{};
+				lightBufferInfo.buffer = perObjectUniformBuffers[i].buffers[0];
+				lightBufferInfo.offset = offset;
+				lightBufferInfo.range = sizeof(UniformBufferLight);
+
+
 				VkDescriptorImageInfo imageInfo{};
 				imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 				imageInfo.imageView = vulkanMaterial.diffuseImageView;
 				imageInfo.sampler = vulkanMaterial.textureSampler;
 
-				std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+				std::array<VkWriteDescriptorSet, 5> descriptorWrites{};
 
 				descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 				descriptorWrites[0].dstSet = descriptorSets[i][j];
@@ -843,6 +956,30 @@ private:
 				descriptorWrites[1].descriptorCount = 1;
 				descriptorWrites[1].pImageInfo = &imageInfo;
 
+				descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+				descriptorWrites[2].dstSet = descriptorSets[i][j];
+				descriptorWrites[2].dstBinding = 2;
+				descriptorWrites[2].dstArrayElement = 0;
+				descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+				descriptorWrites[2].descriptorCount = 1;
+				descriptorWrites[2].pBufferInfo = &eyeBufferInfo;
+
+				descriptorWrites[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+				descriptorWrites[3].dstSet = descriptorSets[i][j];
+				descriptorWrites[3].dstBinding = 3;
+				descriptorWrites[3].dstArrayElement = 0;
+				descriptorWrites[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+				descriptorWrites[3].descriptorCount = 1;
+				descriptorWrites[3].pBufferInfo = &materialBufferInfo;
+
+				descriptorWrites[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+				descriptorWrites[4].dstSet = descriptorSets[i][j];
+				descriptorWrites[4].dstBinding = 4;
+				descriptorWrites[4].dstArrayElement = 0;
+				descriptorWrites[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+				descriptorWrites[4].descriptorCount = 1;
+				descriptorWrites[4].pBufferInfo = &lightBufferInfo;
+
 				vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()),
 					descriptorWrites.data(), 0, nullptr);
 				vulkanMaterial.descriptorSet = descriptorSets[i][j]; // 将描述符集存储在材质中
@@ -857,7 +994,8 @@ private:
 		uint32_t samplerCount = 0;
 
 		for (const auto& materials : vulkanMaterials) {
-			uniformBufferCount += materials.size();
+			//每个材质需要一个采样器和四个 uniform buffer，分别是观察点，材质属性和光源属性还有物体的模型视图投影矩阵
+			uniformBufferCount += materials.size() * 4;
 			samplerCount += materials.size();
 		}
 
@@ -901,8 +1039,37 @@ private:
 		samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		samplerLayoutBinding.pImmutableSamplers = nullptr;
 		samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		// 2. 观察者位置布局绑定
+		VkDescriptorSetLayoutBinding eyePositionLayoutBinding{};
+		eyePositionLayoutBinding.binding = 2;
+		eyePositionLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		eyePositionLayoutBinding.descriptorCount = 1;
+		eyePositionLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		eyePositionLayoutBinding.pImmutableSamplers = nullptr;
 
-		std::array<VkDescriptorSetLayoutBinding, 2> bindings = { uboLayoutBinding, samplerLayoutBinding };
+		// 3. 材质属性布局绑定
+		VkDescriptorSetLayoutBinding materialLayoutBinding{};
+		materialLayoutBinding.binding = 3;
+		materialLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		materialLayoutBinding.descriptorCount = 1;
+		materialLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		materialLayoutBinding.pImmutableSamplers = nullptr;
+
+		// 4. 光源属性布局绑定
+		VkDescriptorSetLayoutBinding lightLayoutBinding{};
+		lightLayoutBinding.binding = 4;
+		lightLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		lightLayoutBinding.descriptorCount = 1;
+		lightLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		lightLayoutBinding.pImmutableSamplers = nullptr;
+
+		std::array<VkDescriptorSetLayoutBinding, 5> bindings = { 
+			uboLayoutBinding, 
+			samplerLayoutBinding,
+			eyePositionLayoutBinding,
+			materialLayoutBinding,
+			lightLayoutBinding
+		};
 		VkDescriptorSetLayoutCreateInfo layoutInfo{};
 		layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 		layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -1035,7 +1202,7 @@ private:
 
 		VkRect2D scissor{};
 		scissor.offset = { 0, 0 };
-		scissor.extent = swapChainExtent;
+		scissor.extent = swapChainExtent; 
 		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
 		for (size_t i = 0; i < meshObjects.size(); i++) {
@@ -1402,6 +1569,17 @@ private:
 		if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) != VK_SUCCESS) {
 			throw std::runtime_error("failed to create logical device!");
 		}
+
+		
+		VkPhysicalDeviceProperties deviceProperties;
+		vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+		if (deviceProperties.apiVersion < VK_API_VERSION_1_4) {
+			throw std::runtime_error("Device does not support Vulkan 1.4 or higher!");
+		}
+
+		//获取最小对齐
+		vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+		minimumUboAlignment = deviceProperties.limits.minUniformBufferOffsetAlignment;
 		/*
 		我们可以使用  vkGetDeviceQueue  函数来获取每个队列族的队列句柄。参数包括逻辑设备、队列族、队列索引以
 		及一个用于存储队列句柄的变量的指针。由于我们仅从这个队列族创建一个队列，
@@ -1570,9 +1748,11 @@ private:
 		}
 
 		for (const auto& uniformBuffer : perObjectUniformBuffers) {
-			for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-				vkDestroyBuffer(device, uniformBuffer.buffers[i], nullptr);
-				vkFreeMemory(device, uniformBuffer.memories[i], nullptr);
+			for (auto & buffer:uniformBuffer.buffers) {
+				vkDestroyBuffer(device, buffer, nullptr);
+			}
+			for (auto& memery : uniformBuffer.memories) {
+				vkFreeMemory(device, memery, nullptr);
 			}
 		}
 
@@ -1745,7 +1925,10 @@ objectCount: 数组中的对象数量
 		appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
 		appInfo.pEngineName = "No Engine";
 		appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-		appInfo.apiVersion = VK_API_VERSION_1_0;
+		appInfo.apiVersion = VK_API_VERSION_1_4;
+
+		
+
 		//创建实例
 		VkInstanceCreateInfo createInfo{};
 		createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;

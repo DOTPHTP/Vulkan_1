@@ -149,6 +149,8 @@
     <None Include="shaders\编译.bat" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Camera.h" />
+    <ClInclude Include="LightSource.h" />
     <ClInclude Include="MeshObject.h" />
     <ClInclude Include="ModelLoader.h" />
     <ClInclude Include="Render.h" />
