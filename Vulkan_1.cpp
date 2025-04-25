@@ -420,7 +420,7 @@ private:
 		
 		createRender();
 		//注意这个要在创建深度缓冲之前创建，因为深度缓冲需要使用命令池
-		createCommandPool();
+		createCommandPool();  
 		
 		createDepthResources();
 		createResolveResources();
