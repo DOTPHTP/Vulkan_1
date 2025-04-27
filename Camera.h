@@ -137,7 +137,7 @@ private:
     glm::vec3 right;    // 右方向
     glm::quat rotation; // 相机的旋转四元数
     glm::vec3 target;   // 目标点
-    float eyeOffset = 0.05f; //屏幕视差
+    float eyeOffset = 0.03f; //屏幕视差
     float fov;
     float aspectRatio;
     float nearPlane;

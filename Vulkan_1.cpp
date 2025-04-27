@@ -84,7 +84,7 @@ private:
 	};
 
 
-	Camera camera{ glm::vec3(0.0f, 1.0f, 3.5f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f), 60.0f, WIDTH / (float)HEIGHT, 0.05f, 10.0f };
+	Camera camera{ glm::vec3(0.0f, 1.0f, 3.5f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f), 40.0f, WIDTH / (float)HEIGHT, 0.05f, 10.0f };
 
 
 	std::vector<MeshObject> meshObjects; // 存储逻辑层的网格体
@@ -697,14 +697,15 @@ private:
 		float rotationSpeed = 36.0f; // 每秒旋转的角度
 		float rotationAngle = rotationSpeed * deltaTime;
 
-		//// 旋转根物体
-		//if (!meshObjects.empty()) {
-		//	meshObjects[0].rotate(rotationAngle, glm::vec3(0.0f, 1.0f, 0.0f));
-		//}
+		// 旋转根物体
+		if (!meshObjects.empty()) {
+			meshObjects[0].rotate(rotationAngle, glm::vec3(0.0f, 1.0f, 0.0f));
+		}
 
 		//camera.rotate(rotationAngle, glm::vec3(0.0f, 1.0f,0.0f));
 		//glm::mat4 ViewMatrix = camera.getViewMatrix();
-		
+		//设置视差，正数表示图像效果是在屏幕的前方，负数表示在屏幕的后方，经过实验0.024是最好的值
+		camera.seteyeOffset(0.024);
 		glm::mat4 projMatrix = camera.getProjectionMatrix();
 		
 		for (size_t i = 0; i < meshObjects.size(); i++) {
@@ -1327,7 +1328,7 @@ private:
 		renderPassInfo.renderArea.extent = swapChainExtent;
 
 		std::array<VkClearValue, 2> clearValues{};
-		clearValues[0].color = { {0.0f, 0.0f, 0.0f, 1.0f} };
+		clearValues[0].color = { {1.0f, 1.0f, 1.0f, 1.0f} };
 		clearValues[1].depthStencil = { 1.0f, 0 };
 		renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
 		renderPassInfo.pClearValues = clearValues.data();
