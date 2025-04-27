@@ -2,6 +2,7 @@
 #include "ModelLoader.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/quaternion.hpp>
 #include <vector>
 #include <string>
 
@@ -12,13 +13,15 @@ public:
         : meshes(meshes), materials(materials) {}
 
     // 获取模型的变换矩阵
+    // 获取模型的变换矩阵
     glm::mat4 getModelMatrix() const {
         glm::mat4 model = glm::mat4(1.0f);
         model = glm::translate(model, translation); // 应用平移
-        model = glm::rotate(model, glm::radians(rotationAngle), rotationAxis); // 应用旋转
+        model *= glm::toMat4(rotation); // 应用旋转（四元数转换为矩阵）
         model = glm::scale(model, scaling); // 应用缩放
         return model;
     }
+
 
     // 累加平移变换
     void translate(const glm::vec3& translation) {
@@ -33,13 +36,11 @@ public:
     }
 
     // 累加旋转变换（绕指定轴旋转）
+    // 累加旋转变换（绕指定轴旋转）
     void rotate(float angle, const glm::vec3& axis) {
-        // 累加旋转角度
-        this->rotationAngle += angle;
-
-        // 更新旋转轴（保持单位化）
         if (glm::length(axis) > 0.0f) {
-            this->rotationAxis = glm::normalize(axis);
+            glm::quat newRotation = glm::angleAxis(glm::radians(angle), glm::normalize(axis)); // 创建新的旋转四元数
+            rotation = newRotation * rotation; // 累加旋转（四元数相乘）
         }
     }
 
@@ -93,16 +94,14 @@ public:
     void resetTransform() {
         translation = glm::vec3(0.0f);
         scaling = glm::vec3(1.0f);
-        rotationAxis = glm::vec3(0.0f, 1.0f, 0.0f);
-        rotationAngle = 0.0f;
+        rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // 单位四元数
     }
 
 private:
     // 变换参数
-    glm::vec3 translation; // 平移向量
-    glm::vec3 scaling;     // 缩放向量
-    glm::vec3 rotationAxis; // 旋转轴
-    float rotationAngle;   // 旋转角度（以度为单位）
+    glm::vec3 translation = { 0, 0, 0 }; // 平移向量
+    glm::vec3 scaling = { 1, 1, 1 };     // 缩放向量
+    glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // 旋转四元数（初始为单位四元数）
     std::vector<ModelLoader::Mesh> meshes;       // 网格数据
     std::vector<ModelLoader::Material> materials; // 材质数据
                          

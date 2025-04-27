@@ -31,7 +31,7 @@ const int MAX_FRAMES_IN_FLIGHT = 2;
 //统一缓冲对象UBO
 struct UniformBufferObject {
 	glm::mat4 model;
-	glm::mat4 view;
+	glm::mat4 view[2];
 	glm::mat4 proj;
 };
 
@@ -84,7 +84,7 @@ private:
 	};
 
 
-	Camera camera{ glm::vec3(0.0f, 1.0f, 3.5f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f), 37.0f, WIDTH / (float)HEIGHT, 0.1f, 10.0f };
+	Camera camera{ glm::vec3(0.0f, 1.0f, 3.5f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f), 37.0f, WIDTH / (float)HEIGHT, 0.1f, 10.0f };
 
 
 	std::vector<MeshObject> meshObjects; // 存储逻辑层的网格体
@@ -97,6 +97,7 @@ private:
 
 
 	Render<Vertex>* renderer;
+	ColorBlendRender<Vertex>* colorBlendRenderer;
 
 	const uint32_t WIDTH = 800;
 	const uint32_t HEIGHT = 600;
@@ -119,9 +120,9 @@ private:
 
 
 	//解析附件
-	VkImageView resolveImageView;
-	VkImage resolveImage;
-	VkDeviceMemory resolveImageMemory;
+	VkImageView resolveImageView[4];
+	VkImage resolveImage[2];
+	VkDeviceMemory resolveImageMemory[2];
 	
 	//着色器描述符，每个不同的材质都需要一个描述符
 	VkDescriptorPool descriptorPool;
@@ -142,7 +143,9 @@ private:
 
 	//设备扩展
 	const std::vector<const char*> deviceExtensions = {
-		VK_KHR_SWAPCHAIN_EXTENSION_NAME
+		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+		VK_KHR_MULTIVIEW_EXTENSION_NAME,
+		VK_NV_VIEWPORT_ARRAY2_EXTENSION_NAME
 	};
 
 	//队列族索引
@@ -176,6 +179,7 @@ private:
 	std::vector<VkImageView> swapChainImageViews;
 	std::vector<VkFramebuffer> swapChainFramebuffers;
 
+	std::vector<VkFramebuffer> BlendFramebuffers;
 	//同步对象
 	std::vector<VkSemaphore> imageAvailableSemaphores;
 	std::vector<VkSemaphore> renderFinishedSemaphores;
@@ -185,7 +189,9 @@ private:
 
 	//图形管线
 	VkDescriptorSetLayout descriptorSetLayout;
-
+	//混合管线
+	VkDescriptorSetLayout descriptorSetLayoutBlend;
+	std::vector<VkDescriptorSet>   descriptorSetBlend;
 	//纹理
 	VkImage textureImage;
 	VkDeviceMemory textureImageMemory;
@@ -212,21 +218,11 @@ private:
 	}
 
 	void drawFrame() {
-		//等待命令缓冲可用，可接受一个栅栏数组，第三个参数指定等待的栅栏数量（任一或者全部），第四个参数指定等待的时间
 		vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-		
-		
-		//获取交换链图像索引
+
 		uint32_t imageIndex;
-		/* vkAcquireNextImageKHR ` 的前两个参数是逻辑设备和我们希望从中获取图像的交换链。
-		第三个参数指定了图像可用的超时时间（以纳秒为单位）。使用 64 位无符号整数的最大值意味着
-		我们实际上禁用了超时。接下来的两个参数指定了在呈现引擎完成使用图像时要发出信号的同步对象。
-		这是我们可以开始向其绘制的时刻。可以指定一个信号量、栅栏或两者都指定。在这里，我们将为此目的使
-		用我们的  imageAvailableSemaphore  。最后一个参数指定了一个变量，用于输出已变为可用状态的交
-		换链图像的索引。该索引指的是我们  swapChainImages  数组中的  VkImage  。
-		我们将使用该索引来选取VkFrameBuffer。*/
-		//查看交换链是否适配，如果不适配则重新创建交换链
-		VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+		VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX,
+			imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
 
 		if (result == VK_ERROR_OUT_OF_DATE_KHR) {
 			recreateSwapChain();
@@ -236,60 +232,100 @@ private:
 			throw std::runtime_error("failed to acquire swap chain image!");
 		}
 
-		//手动重置栅栏
 		vkResetFences(device, 1, &inFlightFences[currentFrame]);
 
+		// 创建统一的命令缓冲
 		vkResetCommandBuffer(commandBuffers[currentFrame], 0);
+		VkCommandBufferBeginInfo beginInfo{};
+		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo);
 
-
-		recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
-		
+		// 第一次渲染：绘制左右眼
 		updateUniformBuffer(currentFrame);
+		recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
 
-		//提交命令缓冲区
+		// 添加图像布局转换屏障（在同一个命令缓冲中）
+		VkImageMemoryBarrier barrier{};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = resolveImage[1];
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+		barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+		vkCmdPipelineBarrier(
+			commandBuffers[currentFrame],
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &barrier
+		);
+
+		// 第二次渲染：混合
+		recordCommandBufferBlend(commandBuffers[currentFrame], imageIndex);
+		VkImageMemoryBarrier barrier1{};
+		barrier1.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER; // 必须明确指定结构体类型
+		barrier1.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		barrier1.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		barrier1.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier1.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier1.image = resolveImage[1];
+		barrier1.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier1.subresourceRange.levelCount = 1;
+		barrier1.subresourceRange.layerCount = 1;
+		barrier1.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;          // 片段着色器读取完成
+		barrier1.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; // 颜色附件可以写入
+
+		vkCmdPipelineBarrier(
+			commandBuffers[currentFrame],
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			0,
+			0, nullptr,
+			0, nullptr,
+			1, &barrier1
+		);
+
+
+		vkEndCommandBuffer(commandBuffers[currentFrame]);
+
+		// 统一提交
 		VkSubmitInfo submitInfo{};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-		
-		//前三个参数指定了在执行开始前要等待哪些信号量以及在图形管线的哪个（些）阶段进行等待。
-		// 我们希望在图像可用之前不要将颜色写入图像，因此我们指定了图形管线中写入颜色附件的阶段。
-		// 这意味着理论上，在图像尚未可用时，实现可以已经开始执行我们的顶点着色器等操作。 
-		// waitStages  数组中的每个条目都对应于  pWaitSemaphores  中具有相同索引的信号量。
+
 		VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
 		VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 		submitInfo.waitSemaphoreCount = 1;
 		submitInfo.pWaitSemaphores = waitSemaphores;
 		submitInfo.pWaitDstStageMask = waitStages;
 
-		//指定要执行的命令缓冲区
 		submitInfo.commandBufferCount = 1;
 		submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
 
-		//指定要发出信号的信号量
 		VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame] };
 		submitInfo.signalSemaphoreCount = 1;
 		submitInfo.pSignalSemaphores = signalSemaphores;
 
 		if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
 			throw std::runtime_error("failed to submit draw command buffer!");
-			
 		}
 
+		// 呈现
 		VkPresentInfoKHR presentInfo{};
 		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-
 		presentInfo.waitSemaphoreCount = 1;
 		presentInfo.pWaitSemaphores = signalSemaphores;
-
-		VkSwapchainKHR swapChains[] = { swapChain };
 		presentInfo.swapchainCount = 1;
-		presentInfo.pSwapchains = swapChains;
+		presentInfo.pSwapchains = &swapChain;
 		presentInfo.pImageIndices = &imageIndex;
-		presentInfo.pResults = nullptr; // Optional
 
-
-
-
-		//提交交换链图像
 		result = vkQueuePresentKHR(presentQueue, &presentInfo);
 
 		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized) {
@@ -300,7 +336,6 @@ private:
 			throw std::runtime_error("failed to present swap chain image!");
 		}
 
-		//切换到下一个帧
 		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
@@ -321,6 +356,7 @@ private:
 		createImageViews();
 		createDepthResources();
 		createResolveResources();
+		creatDescriptorSetsBlend();
 		createFramebuffers();
 	}
 
@@ -328,7 +364,9 @@ private:
 		for (size_t i = 0; i < swapChainFramebuffers.size(); i++) {
 			vkDestroyFramebuffer(device, swapChainFramebuffers[i], nullptr);
 		}
-
+		for (size_t i = 0; i < BlendFramebuffers.size(); i++) {
+			vkDestroyFramebuffer(device, BlendFramebuffers[i], nullptr);
+		}
 		for (size_t i = 0; i < swapChainImageViews.size(); i++) {
 			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
 		}
@@ -347,17 +385,22 @@ private:
 		}
 
 		// 销毁解析图像视图和内存
-		if (resolveImageView != VK_NULL_HANDLE) {
-			vkDestroyImageView(device, resolveImageView, nullptr);
-			resolveImageView = VK_NULL_HANDLE;
+		for (int i = 0; i < 2; i++) {
+			if (resolveImage[i] != VK_NULL_HANDLE) {
+				vkDestroyImage(device, resolveImage[i], nullptr);
+				resolveImage[i] = VK_NULL_HANDLE;
+			}
+			if (resolveImageMemory[i] != VK_NULL_HANDLE) {
+				vkFreeMemory(device, resolveImageMemory[i], nullptr);
+				resolveImageMemory[i] = VK_NULL_HANDLE;
+			}
 		}
-		if (resolveImage != VK_NULL_HANDLE) {
-			vkDestroyImage(device, resolveImage, nullptr);
-			resolveImage = VK_NULL_HANDLE;
-		}
-		if (resolveImageMemory != VK_NULL_HANDLE) {
-			vkFreeMemory(device, resolveImageMemory, nullptr);
-			resolveImageMemory = VK_NULL_HANDLE;
+
+		for (int i = 0; i < 4; i++) {
+			if (resolveImageView[i] != VK_NULL_HANDLE) {
+				vkDestroyImageView(device, resolveImageView[i], nullptr);
+				resolveImageView[i] = VK_NULL_HANDLE;
+			}
 		}
 
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
@@ -413,29 +456,33 @@ private:
 		createSurface();
 		pickPhysicalDevice();
 		createLogicalDevice();
-		createSwapChain();
-		createImageViews();
-		
-		createDescriptorSetLayout();
-		
-		createRender();
 		//注意这个要在创建深度缓冲之前创建，因为深度缓冲需要使用命令池
 		createCommandPool();  
-		
+		createCommandBuffers();
+		createSwapChain();
+		createImageViews();
+		createTextureSampler();
 		createDepthResources();
 		createResolveResources();
+		
 
-		createFramebuffers();
-		createTextureSampler();
+		
 
 		loadModels();
-		initCamera();
 		createVulkanBuffersForMeshes();
 		createVulkanMaterials();
 		createPerObjectUniformBuffers();
+		createDescriptorSetLayout();
 		createDescriptorPool();
 		createDescriptorSets();
-		createCommandBuffers();
+		createDescriptorSetLayoutBlend();
+		creatDescriptorSetsBlend();
+		createRender();
+		createFramebuffers();
+
+		initCamera();
+
+
 		createSyncObjects();
 	}
 
@@ -443,6 +490,11 @@ private:
 		renderer = new Render<Vertex>(device, physicalDevice, swapChainExtent, swapChainImageFormat,
 			"shaders/vert.spv", "shaders/frag.spv", descriptorSetLayout);
 		renderer->initialize();
+
+		colorBlendRenderer = new ColorBlendRender<Vertex>(device, physicalDevice, swapChainExtent, swapChainImageFormat,
+			"shaders/vert.spv", "shaders/color_blend.spv",
+			descriptorSetLayoutBlend);
+		colorBlendRenderer->initialize();
 	}
 
 	void createVulkanMaterials() {
@@ -549,7 +601,7 @@ private:
 		glm::vec3 modelCenter = (minBounds + maxBounds) * 0.5f;
 
 		// 调整相机的位置和目标点
-		glm::vec3 cameraPosition = modelCenter + glm::vec3(0.0f, 0.0f, 3.5f); // 距离目标物体 3.5 个单位
+		glm::vec3 cameraPosition = modelCenter + glm::vec3(0.0f, 0.0f, -3.7f); // 距离目标物体 3.5 个单位
 		camera.reset(cameraPosition, modelCenter, glm::vec3(0.0f, 1.0f, 0.0f)); // 重置相机
 
 	}
@@ -659,7 +711,7 @@ private:
 				uboMaterial.specular = glm::vec4(materials[j].specularColor,1.0);
 				uboMaterial.shininess = materials[j].shininess;
 				uboMaterial.opacity = materials[j].opacity;
-				std::cout << "material: " << materials[j].diffuseColor.x << " " << materials[j].diffuseColor.y << " " << materials[j].diffuseColor.z << std::endl;
+				//std::cout << "material: " << materials[j].diffuseColor.x << " " << materials[j].diffuseColor.y << " " << materials[j].diffuseColor.z << std::endl;
 				char* data = static_cast<char*>(perObjectUniformBuffers[i].mapped[MAX_FRAMES_IN_FLIGHT + j]);
 				memcpy(data, &uboMaterial, sizeof(uboMaterial));
 			}
@@ -672,21 +724,30 @@ private:
 		auto currentTime = std::chrono::high_resolution_clock::now();
 		float deltaTime = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - lastTime).count();
 		lastTime = currentTime;
+		camera.setAspectRatio(static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height));
 
 		// 每秒旋转 36 度
 		float rotationSpeed = 36.0f; // 每秒旋转的角度
 		float rotationAngle = rotationSpeed * deltaTime;
-		camera.setAspectRatio(static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height));
-		camera.rotate(rotationAngle, glm::vec3(0.0f, 1.0f, 0.0f));
-		glm::mat4 viewMatrix = camera.getViewMatrix();
+
+		 //更新每个模型的旋转
+		for (size_t i = 0; i < meshObjects.size(); i++) {
+			meshObjects[i].rotate(rotationAngle, glm::vec3(0.0f, 1.0f, 0.0f)); // 绕 Y 轴旋转
+		}
+
+		//camera.rotate(rotationAngle, glm::vec3(0.0f, 1.0f,0.0f));
+		glm::mat4 leftViewMatrix = camera.getLeftViewMatrix();
+		glm::mat4 rightViewMatrix = camera.getRightViewMatrix();
 		glm::mat4 projMatrix = camera.getProjectionMatrix();
+		projMatrix[1][1] = -projMatrix[1][1]; // 反转 Y 轴
 		for (size_t i = 0; i < meshObjects.size(); i++) {
 			char* data = static_cast<char*>(perObjectUniformBuffers[i].mapped[0]);
 
 			UniformBufferObject ubo{};
 
 			ubo.model = meshObjects[i].getModelMatrix();
-			ubo.view = viewMatrix;
+			ubo.view[0] = leftViewMatrix;
+			ubo.view[1] = rightViewMatrix;
 			ubo.proj = projMatrix;
 			
 			memcpy(data, &ubo, sizeof(ubo));
@@ -720,9 +781,12 @@ private:
 			depthFormat, 
 			VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
 			renderer->getMaxUsableSampleCount(physicalDevice),
-			depthImage, depthImageMemory);
-		depthImageView =VulkanUtils:: createImageView(device,depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
-
+			depthImage, depthImageMemory,
+			2,
+			VK_IMAGE_TYPE_2D
+		);
+		depthImageView =VulkanUtils:: createImageView(device,depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT,VK_IMAGE_VIEW_TYPE_2D_ARRAY,2);
+		std::cout << "创建深度附近视图: " <<  std::endl;
 		VulkanUtils:: transitionImageLayout(
 			device,
 			commandPool,
@@ -737,36 +801,64 @@ private:
 	void createResolveResources() {
 		// 解析附件的格式与交换链图像格式相同
 		VkFormat resolveFormat = swapChainImageFormat;
+		for (int i = 0; i < 2; i++) {
+			
+		
+			// 创建解析附件的图像
+			VulkanUtils:: createImage(
+				device,
+				physicalDevice,
+				swapChainExtent.width,
+				swapChainExtent.height,
+				resolveFormat,
+				VK_IMAGE_TILING_OPTIMAL,
+				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				i==0?renderer->getMaxUsableSampleCount(physicalDevice):VK_SAMPLE_COUNT_1_BIT,
+				resolveImage[i],
+				resolveImageMemory[i],
+				2,
+				VK_IMAGE_TYPE_2D
+			);
 
-		// 创建解析附件的图像
-		VulkanUtils:: createImage(
-			device,
-			physicalDevice,
-			swapChainExtent.width,
-			swapChainExtent.height,
-			resolveFormat,
-			VK_IMAGE_TILING_OPTIMAL,
-			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-			renderer->getMaxUsableSampleCount(physicalDevice),
-			resolveImage,
-			resolveImageMemory
-		);
+			// 创建解析附件的图像视图
+			resolveImageView[i] = VulkanUtils::createImageView(device, resolveImage[i], resolveFormat, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_2D_ARRAY, 2);
+			std::cout << "创建颜色附件视图: " << (int*)resolveImageView[i] << std::endl;
 
-		// 创建解析附件的图像视图
-		resolveImageView =VulkanUtils:: createImageView(device,resolveImage, resolveFormat, VK_IMAGE_ASPECT_COLOR_BIT);
-		//std::cout << "craete resolveImageView: " << (int*)resolveImageView << std::endl;
-
-		// 转换解析附件的布局
-		VulkanUtils:: transitionImageLayout(
-			device,
-			commandPool,
-			graphicsQueue,
-			resolveImage,
-			resolveFormat,
-			VK_IMAGE_LAYOUT_UNDEFINED,
-			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-		);
+			if (i == 1) {
+				// 为每一层创建单独的 ImageView
+				resolveImageView[i * 2] = VulkanUtils::createImageView(
+					device,
+					resolveImage[i],
+					resolveFormat,
+					VK_IMAGE_ASPECT_COLOR_BIT,
+					VK_IMAGE_VIEW_TYPE_2D, // 单层视图
+					1,                     // 第一层
+					0                      // 起始层索引
+				);
+				std::cout << "创建颜色附件视图: " << (int*)resolveImageView[i*2] << std::endl;
+				resolveImageView[i * 2 + 1] = VulkanUtils::createImageView(
+					device,
+					resolveImage[i],
+					resolveFormat,
+					VK_IMAGE_ASPECT_COLOR_BIT,
+					VK_IMAGE_VIEW_TYPE_2D, // 单层视图
+					1,                     // 第二层
+					1                      // 起始层索引
+				);
+				std::cout << "创建颜色附件视图: " << (int*)resolveImageView[i * 2 + 1] << std::endl; 
+			}
+			// 转换解析附件的布局
+			VulkanUtils:: transitionImageLayout(
+				device,
+				commandPool,
+				graphicsQueue,
+				resolveImage[i],
+				resolveFormat,
+				VK_IMAGE_LAYOUT_UNDEFINED,
+				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+			);
+		}
 	}
 
 
@@ -877,6 +969,69 @@ private:
 
 
 		VulkanUtils::endSingleTimeCommands(device, commandPool, graphicsQueue, commandBuffer);
+	}
+
+
+	void creatDescriptorSetsBlend() {
+		descriptorSetBlend.resize(meshObjects.size());
+		for (int i = 0; i < meshObjects.size(); i++) {
+			descriptorSetBlend[i] = VK_NULL_HANDLE;
+			VkDescriptorSetAllocateInfo allocInfo{};
+			allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+			allocInfo.descriptorPool = descriptorPool;
+			allocInfo.descriptorSetCount = 1;
+			allocInfo.pSetLayouts = &descriptorSetLayoutBlend;
+			VkResult result = vkAllocateDescriptorSets(device, &allocInfo, &descriptorSetBlend[i]);
+			if (result != VK_SUCCESS) {
+				std::cerr << "Failed to allocate descriptor set for material " << std::endl;
+			}
+			VkDeviceSize offset = 0;
+
+			VkDescriptorBufferInfo bufferInfo{};
+			//全部的都一样，直接用了
+			bufferInfo.buffer = perObjectUniformBuffers[i].buffers[0];
+			bufferInfo.offset = 0;
+			bufferInfo.range = sizeof(UniformBufferObject);
+
+			VkDescriptorImageInfo imageInfo{};
+			imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			imageInfo.imageView = resolveImageView[2];
+			imageInfo.sampler = textureSampler;
+			std::cout << "resolveImageView[2]: " << (int*)resolveImageView[2] << std::endl;
+			VkDescriptorImageInfo imageInfo1{};
+			imageInfo1.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			imageInfo1.imageView = resolveImageView[3];
+			imageInfo1.sampler = textureSampler;
+			std::cout << "resolveImageView[3]: " << (int*)resolveImageView[3] << std::endl;
+			std::array<VkWriteDescriptorSet, 3> descriptorWrites{};
+
+			descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			descriptorWrites[0].dstSet = descriptorSetBlend[i];
+			descriptorWrites[0].dstBinding = 0;
+			descriptorWrites[0].dstArrayElement = 0;
+			descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			descriptorWrites[0].descriptorCount = 1;
+			descriptorWrites[0].pBufferInfo = &bufferInfo;
+
+			descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			descriptorWrites[1].dstSet = descriptorSetBlend[i];
+			descriptorWrites[1].dstBinding = 1;
+			descriptorWrites[1].dstArrayElement = 0;
+			descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			descriptorWrites[1].descriptorCount = 1;
+			descriptorWrites[1].pImageInfo = &imageInfo;
+
+			descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			descriptorWrites[2].dstSet = descriptorSetBlend[i];
+			descriptorWrites[2].dstBinding = 2;
+			descriptorWrites[2].dstArrayElement = 0;
+			descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			descriptorWrites[2].descriptorCount = 1;
+			descriptorWrites[2].pImageInfo = &imageInfo1;
+
+			vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()),
+				descriptorWrites.data(), 0, nullptr);
+		}
 	}
 
 	void createDescriptorSets() {
@@ -998,7 +1153,10 @@ private:
 			uniformBufferCount += materials.size() * 4;
 			samplerCount += materials.size();
 		}
-
+		
+		//还需要两个后处理的采样器,和一个统一缓冲
+		samplerCount += meshObjects.size()*2;
+		uniformBufferCount += meshObjects.size();
 		uint32_t maxSets = uniformBufferCount; // 每个材质对应一个描述符集
 
 		std::array<VkDescriptorPoolSize, 2> poolSizes{};
@@ -1021,6 +1179,45 @@ private:
 		}
 	}
 
+	void createDescriptorSetLayoutBlend() {
+		VkDescriptorSetLayoutBinding uboLayoutBinding{};
+		uboLayoutBinding.binding = 0;
+		uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		uboLayoutBinding.descriptorCount = 1;
+
+		//指定着色器阶段,我们将使用 VK_SHADER_STAGE_VERTEX_BIT 来指定顶点着色器阶段
+		uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+		uboLayoutBinding.pImmutableSamplers = nullptr; // Optional
+
+		VkDescriptorSetLayoutBinding samplerLayoutBinding{};
+		samplerLayoutBinding.binding = 1;
+		samplerLayoutBinding.descriptorCount = 1;
+		samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		samplerLayoutBinding.pImmutableSamplers = nullptr;
+		samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+		VkDescriptorSetLayoutBinding samplerLayoutBinding1{};
+		samplerLayoutBinding1.binding = 2;
+		samplerLayoutBinding1.descriptorCount = 1;
+		samplerLayoutBinding1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		samplerLayoutBinding1.pImmutableSamplers = nullptr;
+		samplerLayoutBinding1.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
+			uboLayoutBinding,
+			samplerLayoutBinding,
+			samplerLayoutBinding1
+		};
+		VkDescriptorSetLayoutCreateInfo layoutInfo{};
+		layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+		layoutInfo.pBindings = bindings.data();
+
+
+		if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayoutBlend) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create descriptor set layout!");
+		}
+	}
 	//创建着色器布局
 	void createDescriptorSetLayout() {
 		VkDescriptorSetLayoutBinding uboLayoutBinding{};
@@ -1165,19 +1362,12 @@ private:
 
 	//将命令写入命令缓冲区，以及想要写入的图像索引
 	void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
-		VkCommandBufferBeginInfo beginInfo{};
-		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-		beginInfo.flags = 0;
-		beginInfo.pInheritanceInfo = nullptr;
-
-		if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
-			throw std::runtime_error("failed to begin recording command buffer!");
-		}
+		
 
 		VkRenderPassBeginInfo renderPassInfo{};
 		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 		renderPassInfo.renderPass = renderer->getRenderPass();
-		renderPassInfo.framebuffer = swapChainFramebuffers[imageIndex];
+		renderPassInfo.framebuffer = BlendFramebuffers[imageIndex];
 		renderPassInfo.renderArea.offset = { 0, 0 };
 		renderPassInfo.renderArea.extent = swapChainExtent;
 
@@ -1227,9 +1417,67 @@ private:
 
 		vkCmdEndRenderPass(commandBuffer);
 
-		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-			throw std::runtime_error("failed to record command buffer!");
+		
+	}
+
+
+	void recordCommandBufferBlend(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+		
+
+		VkRenderPassBeginInfo renderPassInfo{};
+		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		renderPassInfo.renderPass = colorBlendRenderer ->getRenderPass();
+		renderPassInfo.framebuffer = swapChainFramebuffers[imageIndex];
+		renderPassInfo.renderArea.offset = { 0, 0 };
+		renderPassInfo.renderArea.extent = swapChainExtent;
+
+		std::array<VkClearValue, 2> clearValues{};
+		clearValues[0].color = { {0.0f, 0.0f, 0.0f, 1.0f} };
+		clearValues[1].depthStencil = { 1.0f, 0 };
+		renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+		renderPassInfo.pClearValues = clearValues.data();
+
+		vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, colorBlendRenderer ->getGraphicsPipeline());
+
+		VkViewport viewport{};
+		viewport.x = 0.0f;
+		viewport.y = 0.0f;
+		viewport.width = static_cast<float>(swapChainExtent.width);
+		viewport.height = static_cast<float>(swapChainExtent.height);
+		viewport.minDepth = 0.0f;
+		viewport.maxDepth = 1.0f;
+		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+		VkRect2D scissor{};
+		scissor.offset = { 0, 0 };
+		scissor.extent = swapChainExtent;
+		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+		for (size_t i = 0; i < meshObjects.size(); i++) {
+			const auto& vulkanMesh = vulkanMeshes[i];
+
+			// 绑定统一的顶点缓冲区和索引缓冲区
+			VkDeviceSize offsets[] = { 0 };
+			vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vulkanMesh.vertexBuffer, offsets);
+			vkCmdBindIndexBuffer(commandBuffer, vulkanMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+			// 绘制每个 Mesh
+			for (const auto& drawInfo : vulkanMesh.materialDrawInfos) {
+				// 绑定对应的材质描述集
+				vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+					 colorBlendRenderer->getPipelineLayout(), 0, 1,
+					&descriptorSetBlend[i], 0, nullptr);
+
+				// 绘制当前 Mesh
+				vkCmdDrawIndexed(commandBuffer, drawInfo.indexCount, 1, drawInfo.indexOffset, 0, 0);
+			}
 		}
+
+		vkCmdEndRenderPass(commandBuffer);
+
+		
 	}
 
 	//创建命令池
@@ -1254,16 +1502,18 @@ private:
 	//创建帧缓冲区
 	void createFramebuffers() {
 		swapChainFramebuffers.resize(swapChainImageViews.size());
-
+		BlendFramebuffers.resize(swapChainImageViews.size());
 		//遍历图像视图，创建帧缓冲区
 		for (size_t i = 0; i < swapChainImageViews.size(); i++) {
 			std::array<VkImageView, 3> attachments = {
 				//这个顺序要和渲染通道的颜色附件和深度附件定义时指定的顺序一致
-				resolveImageView,
+				resolveImageView[0],
 				depthImageView,
+				resolveImageView[1]
+			};
+			std::array<VkImageView, 1> attachments1 = {
 				swapChainImageViews[i]
 			};
-
 			VkFramebufferCreateInfo framebufferInfo{};
 			framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
 			framebufferInfo.renderPass = renderer->getRenderPass();
@@ -1271,6 +1521,17 @@ private:
 			framebufferInfo.pAttachments = attachments.data();
 			framebufferInfo.width = swapChainExtent.width;
 			framebufferInfo.height = swapChainExtent.height;
+			//指定图像的层数,如果是立体视觉交换链，则为2（左右眼）
+			framebufferInfo.layers =1;
+
+			if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &BlendFramebuffers[i]) != VK_SUCCESS) {
+				throw std::runtime_error("failed to create framebuffer!");
+			}
+
+			
+			framebufferInfo.renderPass = colorBlendRenderer->getRenderPass();
+			framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments1.size());
+			framebufferInfo.pAttachments = attachments1.data();
 			//指定图像的层数,如果是立体视觉交换链，则为2（左右眼）
 			framebufferInfo.layers = 1;
 
@@ -1282,19 +1543,19 @@ private:
 
 
 	//创建着色器模块
-	VkShaderModule createShaderModule(const std::vector<char>& code) {
-		VkShaderModuleCreateInfo createInfo{};
-		createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-		createInfo.codeSize = code.size();
-		//vector默认满足对齐要求，所以可以直接转换为uint32_t*
-		createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+	//VkShaderModule createShaderModule(const std::vector<char>& code) {
+	//	VkShaderModuleCreateInfo createInfo{};
+	//	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	//	createInfo.codeSize = code.size();
+	//	//vector默认满足对齐要求，所以可以直接转换为uint32_t*
+	//	createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
 
-		VkShaderModule shaderModule;
-		if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create shader module!");
-		}
-		return shaderModule;
-	}
+	//	VkShaderModule shaderModule;
+	//	if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+	//		throw std::runtime_error("failed to create shader module!");
+	//	}
+	//	return shaderModule;
+	//}
 
 
 	//创建图像视图
@@ -1333,10 +1594,10 @@ private:
 		createInfo.imageExtent = extent;
 		//除非是立体视觉交换链，否则图像层数必须为1
 		createInfo.imageArrayLayers = 1;
-
+	
 		/*也有可能您会先将图像渲染到单独的图像上以执行诸如后期处理之类的操作。在这种情况下，
 		您可以使用类似  VK_IMAGE_USAGE_TRANSFER_DST_BIT  的值，并使用内存操作将渲染的图像传输到交换链图像*/
-		createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
 		QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
 		uint32_t queueFamilyIndices[] = { indices.graphicsFamily.value(), indices.presentFamily.value() };
@@ -1464,8 +1725,22 @@ private:
 
 		for (const auto& extension : availableExtensions) {
 			requiredExtensions.erase(extension.extensionName);
+			//std::cout << "Available extension: " << extension.extensionName << std::endl;
 		}
+		
+		// 检查是否支持多视图
+		VkPhysicalDeviceMultiviewFeatures multiviewFeatures{};
+		multiviewFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES;
+		
+		VkPhysicalDeviceFeatures2 features2{};
+		features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		features2.pNext = &multiviewFeatures;
+		
+		vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
 
+		if (!multiviewFeatures.multiview) {
+			throw std::runtime_error("设备不支持多视图！");
+		}
 		return requiredExtensions.empty();
 	}
 
@@ -1566,6 +1841,10 @@ private:
 		createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
 		createInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
+		VkPhysicalDeviceMultiviewFeatures multiviewFeatures{};
+		multiviewFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES;
+		multiviewFeatures.multiview = VK_TRUE; // 启用多视图功能
+		createInfo.pNext = &multiviewFeatures; // 将 multiviewFeatures 链接到 pNext
 		if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) != VK_SUCCESS) {
 			throw std::runtime_error("failed to create logical device!");
 		}
@@ -1616,6 +1895,7 @@ private:
 		if (physicalDevice == VK_NULL_HANDLE) {
 			throw std::runtime_error("failed to find a suitable GPU!");
 		}
+		isDeviceSuitable(physicalDevice);
 
 	}
 
@@ -1755,7 +2035,9 @@ private:
 				vkFreeMemory(device, memery, nullptr);
 			}
 		}
-
+		for (size_t i = 0; i < BlendFramebuffers.size(); i++) {
+			vkDestroyFramebuffer(device, BlendFramebuffers[i], nullptr);
+		}
 		// 销毁深度图像
 		if (depthImageView != VK_NULL_HANDLE) {
 			vkDestroyImageView(device, depthImageView, nullptr);
@@ -1770,29 +2052,38 @@ private:
 			depthImageMemory = VK_NULL_HANDLE;
 		}
 
-		// 销毁解析图像
-		if (resolveImageView != VK_NULL_HANDLE) {
-			vkDestroyImageView(device, resolveImageView, nullptr);
-			resolveImageView = VK_NULL_HANDLE;
+	
+		for (int i = 0; i < 2; i++) {
+			if (resolveImage[i] != VK_NULL_HANDLE) {
+				vkDestroyImage(device, resolveImage[i], nullptr);
+				resolveImage[i] = VK_NULL_HANDLE;
+			}
+			if (resolveImageMemory[i] != VK_NULL_HANDLE) {
+				vkFreeMemory(device, resolveImageMemory[i], nullptr);
+				resolveImageMemory[i] = VK_NULL_HANDLE;
+			}
 		}
-		if (resolveImage != VK_NULL_HANDLE) {
-			vkDestroyImage(device, resolveImage, nullptr);
-			resolveImage = VK_NULL_HANDLE;
-		}
-		if (resolveImageMemory != VK_NULL_HANDLE) {
-			vkFreeMemory(device, resolveImageMemory, nullptr);
-			resolveImageMemory = VK_NULL_HANDLE;
-		}
-
 		
+		for (int i = 0; i < 4; i++) {
+			if (resolveImageView[i] != VK_NULL_HANDLE) {
+				vkDestroyImageView(device, resolveImageView[i], nullptr);
+				resolveImageView[i] = VK_NULL_HANDLE;
+			}
+		}
 
 		vkDestroyDescriptorPool(device, descriptorPool, nullptr);
 
+		for (auto& des : descriptorSetBlend) {
+			vkFreeDescriptorSets(device, descriptorPool, 1, &des);
+		}
+
 		//销毁描述符池
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-
+		vkDestroyDescriptorSetLayout(device, descriptorSetLayoutBlend, nullptr);
+	
+		
 		delete renderer;
-
+		delete colorBlendRenderer;
 		//销毁命令池
 		vkDestroyCommandPool(device, commandPool, nullptr);
 		//销毁逻辑设备
