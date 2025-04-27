@@ -6,15 +6,15 @@ class Camera {
 public:
     Camera(glm::vec3 position, glm::vec3 target, glm::vec3 up, float fov, float aspectRatio, float nearPlane, float farPlane)
         : position(position), target(target), up(up), fov(fov), aspectRatio(aspectRatio), nearPlane(nearPlane), farPlane(farPlane) {
+        forward = glm::normalize(target - position);
+        right = glm::normalize(glm::cross(forward, up));
+        this->up = glm::normalize(glm::cross(right, forward));
         rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-        updateDirectionVectors();
     }
 
     // 平移相机
     void translate(const glm::vec3& translation) {
-        position += translation;
-        target += translation;
-        updateDirectionVectors();
+        position += translation.x * right + translation.y * up + translation.z * forward;
     }
 
     // 使用四元数绕某个轴旋转相机
@@ -22,7 +22,11 @@ public:
         if (glm::length(axis) > 0.0f) {
             glm::quat newRotation = glm::angleAxis(glm::radians(angle), glm::normalize(axis)); // 创建旋转四元数
             rotation = newRotation * rotation; // 累积旋转（注意顺序：新旋转在前）
-            updateDirectionVectors();
+
+            // 更新局部坐标系基向量
+            forward = glm::normalize(newRotation * forward);
+            right = glm::normalize(glm::cross(forward, up));
+            up = glm::normalize(glm::cross(right, forward));
         }
     }
 
@@ -35,19 +39,19 @@ public:
     void setAspectRatio(float newAspectRatio) {
         aspectRatio = newAspectRatio;
     }
-    // 获取右方向向量
-    glm::vec3 getRight() const {
-        return right;
-    }
     // 使用四元数绕目标点旋转相机
     void rotateAroundTarget(float angle, const glm::vec3& axis) {
         if (glm::length(axis) > 0.0f) {
             glm::quat newRotation = glm::angleAxis(glm::radians(angle), glm::normalize(axis)); // 创建旋转四元数
             rotation = newRotation * rotation; // 累积旋转
-            glm::vec3 direction = position - target;
+            glm::vec3 direction = position - (position + forward);
             direction = newRotation * direction; // 应用旋转到方向向量
-            position = target + direction; // 更新相机位置
-            updateDirectionVectors();
+            position = (position + forward) + direction; // 更新相机位置
+
+            // 更新局部坐标系基向量
+            forward = glm::normalize(newRotation * forward);
+            right = glm::normalize(glm::cross(forward, up));
+            up = glm::normalize(glm::cross(right, forward));
         }
     }
     // 缩放相机（调整视角）
@@ -60,7 +64,20 @@ public:
     glm::vec3 getUp() const {
         return up;
     }
+    glm::vec3 getPosition() const {
+        return position;
+    }
 
+    glm::vec3 getTarget() const {
+        return target;
+    }
+    glm::vec3 getRight() const {
+        return right;
+    }
+
+    glm::vec3 getForward() const {
+        return forward;
+    }
     // 获取视图矩阵
     glm::mat4 getViewMatrix() const {
         return glm::lookAt(position, target, up);
@@ -81,32 +98,36 @@ public:
         //proj[1][1] *= -1; // Vulkan 需要翻转 Y 轴,使用扩展支持
         return proj;
     }
-	glm::vec3 getPosition() const {
-		return position;
-	}
+	
+    glm::mat4 getProjectionMatrixWithDepthOffset( float objectDepth) const {
+        glm::mat4 proj = glm::perspective(glm::radians(fov), aspectRatio, nearPlane, farPlane);
+        float depthOffset = eyeOffset / objectDepth; // 偏移量与深度成反比
+        proj[2][0] -= depthOffset / aspectRatio; // 添加水平偏移
+       // proj[1][1] *= -1; // Vulkan 需要反转 Y 轴
+        return proj;
+    }
+
     // 重置相机到初始状态
     void reset(glm::vec3 newPosition, glm::vec3 newTarget, glm::vec3 newUp) {
         position = newPosition;
         target = newTarget;
-        up = glm::normalize(newUp);
-        updateDirectionVectors();
+        forward = glm::normalize(newTarget - newPosition);
+        right = glm::normalize(glm::cross(forward, newUp));
+        up = glm::normalize(glm::cross(right, forward));
+        rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
     }
 private:
     glm::vec3 position;
-    glm::vec3 target;
-    glm::vec3 up;
-    glm::vec3 right;    // 相机右方向
+    glm::vec3 forward;  // 前方向（目标方向）
+    glm::vec3 up;       // 上方向
+    glm::vec3 right;    // 右方向
     glm::quat rotation; // 相机的旋转四元数
-    float eyeOffset = 0.08f; // 瞳孔间距
+    glm::vec3 target;   // 目标点
+    float eyeOffset = 0.1f; // 瞳孔间距
     float fov;
     float aspectRatio;
     float nearPlane;
     float farPlane;
     // 更新方向向量
-    void updateDirectionVectors() {
-        glm::vec3 direction = glm::normalize(target - position);
-        direction = rotation * glm::vec3(0.0f, 0.0f, -1.0f); // 应用旋转到前向向量
-        right = glm::normalize(glm::cross(direction, glm::vec3(0.0f, 1.0f, 0.0f))); // 计算右向量
-        up = glm::normalize(glm::cross(right, direction)); // 计算上向量
-    }
+    
 };

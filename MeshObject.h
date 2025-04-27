@@ -36,7 +36,6 @@ public:
     }
 
     // 累加旋转变换（绕指定轴旋转）
-    // 累加旋转变换（绕指定轴旋转）
     void rotate(float angle, const glm::vec3& axis) {
         if (glm::length(axis) > 0.0f) {
             glm::quat newRotation = glm::angleAxis(glm::radians(angle), glm::normalize(axis)); // 创建新的旋转四元数
@@ -89,6 +88,13 @@ public:
             }
         }
     }
+    void setParentIndex(int index) {
+        parentIndex = index;
+    }
+
+    int getParentIndex() const {
+        return parentIndex;
+    }
 
     // 重置模型变换矩阵为单位矩阵
     void resetTransform() {
@@ -104,5 +110,6 @@ private:
     glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // 旋转四元数（初始为单位四元数）
     std::vector<ModelLoader::Mesh> meshes;       // 网格数据
     std::vector<ModelLoader::Material> materials; // 材质数据
+    int parentIndex = -1; // 父物体的索引，-1 表示没有父物体
                          
 };

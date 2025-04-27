@@ -31,8 +31,8 @@ const int MAX_FRAMES_IN_FLIGHT = 2;
 //统一缓冲对象UBO
 struct UniformBufferObject {
 	glm::mat4 model;
-	glm::mat4 view[2];
-	glm::mat4 proj;
+	glm::mat4 view;
+	glm::mat4 proj[2];
 };
 
 struct UniformBufferMaterial {
@@ -469,6 +469,7 @@ private:
 		
 
 		loadModels();
+		setupHierarchy();
 		createVulkanBuffersForMeshes();
 		createVulkanMaterials();
 		createPerObjectUniformBuffers();
@@ -718,6 +719,14 @@ private:
 		}
 	}
 
+	void setupHierarchy() {
+		if (meshObjects.size() > 1) {
+			for (size_t i = 1; i < meshObjects.size(); ++i) {
+				meshObjects[i].setParentIndex(0); // 将所有物体的父物体设置为第一个物体
+			}
+		}
+	}
+
 	// 更新统一缓冲区
 	void updateUniformBuffer(uint32_t currentImage) {
 		static auto lastTime = std::chrono::high_resolution_clock::now();
@@ -730,26 +739,34 @@ private:
 		float rotationSpeed = 36.0f; // 每秒旋转的角度
 		float rotationAngle = rotationSpeed * deltaTime;
 
-		 //更新每个模型的旋转
-		for (size_t i = 0; i < meshObjects.size(); i++) {
-			meshObjects[i].rotate(rotationAngle, glm::vec3(0.0f, 1.0f, 0.0f)); // 绕 Y 轴旋转
+		// 旋转根物体
+		if (!meshObjects.empty()) {
+			meshObjects[0].rotate(rotationAngle, glm::vec3(0.0f, 1.0f, 0.0f));
 		}
 
 		//camera.rotate(rotationAngle, glm::vec3(0.0f, 1.0f,0.0f));
-		glm::mat4 leftViewMatrix = camera.getLeftViewMatrix();
-		glm::mat4 rightViewMatrix = camera.getRightViewMatrix();
+		glm::mat4 ViewMatrix = camera.getViewMatrix();
+		
 		glm::mat4 projMatrix = camera.getProjectionMatrix();
 		projMatrix[1][1] = -projMatrix[1][1]; // 反转 Y 轴
 		for (size_t i = 0; i < meshObjects.size(); i++) {
 			char* data = static_cast<char*>(perObjectUniformBuffers[i].mapped[0]);
 
 			UniformBufferObject ubo{};
-
+			//应用层级建模
 			ubo.model = meshObjects[i].getModelMatrix();
-			ubo.view[0] = leftViewMatrix;
-			ubo.view[1] = rightViewMatrix;
-			ubo.proj = projMatrix;
-			
+			if (meshObjects[i].getParentIndex() != -1) {
+				ubo.model = meshObjects[meshObjects[i].getParentIndex()].getModelMatrix() * ubo.model;
+			}
+			ubo.view = ViewMatrix;
+			// 计算物体的深度
+			glm::vec3 objectPosition = glm::vec3(ubo.model[3]); // 提取物体的世界坐标
+			float objectDepth = glm::length(objectPosition - camera.getPosition()); // 计算物体到相机的距离
+
+
+			ubo.proj[0] = projMatrix;
+			ubo.proj[1] = camera.getProjectionMatrixWithDepthOffset(objectDepth); 
+			ubo.proj[1][1][1] = -ubo.proj[1][1][1]; // 反转 Y 轴
 			memcpy(data, &ubo, sizeof(ubo));
 			data +=VulkanUtils::alignOffset(sizeof(ubo), minimumUboAlignment);
 

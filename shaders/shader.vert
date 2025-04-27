@@ -13,14 +13,14 @@ layout(location = 3) out vec3 fragPosition;
 layout(location = 4)flat out int Instanceidx;
 layout(binding = 0) uniform UniformBufferObject {
     mat4 model;
-    mat4 view[2];
-    mat4 proj;
+    mat4 view;
+    mat4 proj[2];
 } ubo;
 
 void main() {
     int idx = gl_ViewIndex;
     vec4 worldPosition = ubo.model * vec4(inPosition, 1.0);
-    gl_Position = ubo.proj * ubo.view[idx] * worldPosition;
+    gl_Position = ubo.proj[idx] * ubo.view * worldPosition;
     //gl_Position.y = -gl_Position.y; // VulkanÐèÒª·­×ªYÖá
     fragColor = inColor;
     fragTexCoord = inTexCoord;
