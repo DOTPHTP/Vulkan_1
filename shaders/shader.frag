@@ -69,7 +69,7 @@ void main() {
     // ×îÖÕÑÕÉ«¼ÆËã
     vec4 color = ambient + diffuse + specular;
     color *= texColor;
-
+    
     outColor = vec4(color.rgb, material.opacity);
     
 }

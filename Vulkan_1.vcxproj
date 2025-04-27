@@ -143,6 +143,7 @@
     </None>
     <None Include="shaders\brdf.glsl" />
     <None Include="shaders\color_blend.frag" />
+    <None Include="shaders\color_blend.vert" />
     <None Include="shaders\pbr.frag" />
     <None Include="shaders\shader.frag" />
     <None Include="shaders\shader.vert" />

@@ -97,7 +97,7 @@ private:
 
 
 	Render<Vertex>* renderer;
-	ColorBlendRender<Vertex>* colorBlendRenderer;
+	ColorBlendRender* colorBlendRenderer;
 
 	const uint32_t WIDTH = 800;
 	const uint32_t HEIGHT = 600;
@@ -191,7 +191,7 @@ private:
 	VkDescriptorSetLayout descriptorSetLayout;
 	//混合管线
 	VkDescriptorSetLayout descriptorSetLayoutBlend;
-	std::vector<VkDescriptorSet>   descriptorSetBlend;
+	VkDescriptorSet  descriptorSetBlend;
 	//纹理
 	VkImage textureImage;
 	VkDeviceMemory textureImageMemory;
@@ -244,55 +244,11 @@ private:
 		updateUniformBuffer(currentFrame);
 		recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
 
-		// 添加图像布局转换屏障（在同一个命令缓冲中）
-		VkImageMemoryBarrier barrier{};
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = resolveImage[1];
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.levelCount = 1;
-		barrier.subresourceRange.layerCount = 2;
-		barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-		vkCmdPipelineBarrier(
-			commandBuffers[currentFrame],
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			0,
-			0, nullptr,
-			0, nullptr,
-			1, &barrier
-		);
+		
 
 		// 第二次渲染：混合
 		recordCommandBufferBlend(commandBuffers[currentFrame], imageIndex);
-		VkImageMemoryBarrier barrier1{};
-		barrier1.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER; // 必须明确指定结构体类型
-		barrier1.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		barrier1.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		barrier1.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier1.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier1.image = resolveImage[1];
-		barrier1.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier1.subresourceRange.levelCount = 1;
-		barrier1.subresourceRange.layerCount = 2;
-		barrier1.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;          // 片段着色器读取完成
-		barrier1.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; // 颜色附件可以写入
-
-		vkCmdPipelineBarrier(
-			commandBuffers[currentFrame],
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			0,
-			0, nullptr,
-			0, nullptr,
-			1, &barrier1
-		);
-
+		
 
 		vkEndCommandBuffer(commandBuffers[currentFrame]);
 
@@ -402,9 +358,9 @@ private:
 				resolveImageView[i] = VK_NULL_HANDLE;
 			}
 		}
-		for (auto& des : descriptorSetBlend) {
-			vkFreeDescriptorSets(device, descriptorPool, 1, &des);
-		}
+		if( descriptorSetBlend!=VK_NULL_HANDLE) 
+			vkFreeDescriptorSets(device, descriptorPool, 1, &descriptorSetBlend);
+		
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
 	}
 
@@ -494,8 +450,8 @@ private:
 			"shaders/vert.spv", "shaders/frag.spv", descriptorSetLayout);
 		renderer->initialize();
 
-		colorBlendRenderer = new ColorBlendRender<Vertex>(device, physicalDevice, swapChainExtent, swapChainImageFormat,
-			"shaders/vert.spv", "shaders/color_blend.spv",
+		colorBlendRenderer = new ColorBlendRender(device, physicalDevice, swapChainExtent, swapChainImageFormat,
+			"shaders/color_blend_vert.spv", "shaders/color_blend_frag.spv",
 			descriptorSetLayoutBlend);
 		colorBlendRenderer->initialize();
 	}
@@ -741,10 +697,10 @@ private:
 		float rotationSpeed = 36.0f; // 每秒旋转的角度
 		float rotationAngle = rotationSpeed * deltaTime;
 
-		// 旋转根物体
-		if (!meshObjects.empty()) {
-			meshObjects[0].rotate(rotationAngle, glm::vec3(0.0f, 1.0f, 0.0f));
-		}
+		//// 旋转根物体
+		//if (!meshObjects.empty()) {
+		//	meshObjects[0].rotate(rotationAngle, glm::vec3(0.0f, 1.0f, 0.0f));
+		//}
 
 		//camera.rotate(rotationAngle, glm::vec3(0.0f, 1.0f,0.0f));
 		//glm::mat4 ViewMatrix = camera.getViewMatrix();
@@ -993,25 +949,20 @@ private:
 
 
 	void creatDescriptorSetsBlend() {
-		descriptorSetBlend.resize(meshObjects.size());
-		for (int i = 0; i < meshObjects.size(); i++) {
-			descriptorSetBlend[i] = VK_NULL_HANDLE;
+		
+			descriptorSetBlend = VK_NULL_HANDLE;
 			VkDescriptorSetAllocateInfo allocInfo{};
 			allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 			allocInfo.descriptorPool = descriptorPool;
 			allocInfo.descriptorSetCount = 1;
 			allocInfo.pSetLayouts = &descriptorSetLayoutBlend;
-			VkResult result = vkAllocateDescriptorSets(device, &allocInfo, &descriptorSetBlend[i]);
+			VkResult result = vkAllocateDescriptorSets(device, &allocInfo, &descriptorSetBlend);
 			if (result != VK_SUCCESS) {
 				std::cerr << "Failed to allocate descriptor set for material " << std::endl;
 			}
 			VkDeviceSize offset = 0;
 
-			VkDescriptorBufferInfo bufferInfo{};
-			//全部的都一样，直接用了
-			bufferInfo.buffer = perObjectUniformBuffers[i].buffers[0];
-			bufferInfo.offset = 0;
-			bufferInfo.range = sizeof(UniformBufferObject);
+			
 
 			VkDescriptorImageInfo imageInfo{};
 			imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1023,35 +974,29 @@ private:
 			imageInfo1.imageView = resolveImageView[3];
 			imageInfo1.sampler = textureSampler;
 			std::cout << "resolveImageView[3]: " << (int*)resolveImageView[3] << std::endl;
-			std::array<VkWriteDescriptorSet, 3> descriptorWrites{};
+			std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
 
+			
 			descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[0].dstSet = descriptorSetBlend[i];
+			descriptorWrites[0].dstSet = descriptorSetBlend;
 			descriptorWrites[0].dstBinding = 0;
 			descriptorWrites[0].dstArrayElement = 0;
-			descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			descriptorWrites[0].descriptorCount = 1;
-			descriptorWrites[0].pBufferInfo = &bufferInfo;
+			descriptorWrites[0].pImageInfo = &imageInfo;
 
 			descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[1].dstSet = descriptorSetBlend[i];
+			descriptorWrites[1].dstSet = descriptorSetBlend;
 			descriptorWrites[1].dstBinding = 1;
 			descriptorWrites[1].dstArrayElement = 0;
 			descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			descriptorWrites[1].descriptorCount = 1;
-			descriptorWrites[1].pImageInfo = &imageInfo;
+			descriptorWrites[1].pImageInfo = &imageInfo1;
 
-			descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[2].dstSet = descriptorSetBlend[i];
-			descriptorWrites[2].dstBinding = 2;
-			descriptorWrites[2].dstArrayElement = 0;
-			descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			descriptorWrites[2].descriptorCount = 1;
-			descriptorWrites[2].pImageInfo = &imageInfo1;
 
 			vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()),
 				descriptorWrites.data(), 0, nullptr);
-		}
+		
 	}
 
 	void createDescriptorSets() {
@@ -1176,7 +1121,6 @@ private:
 		
 		//还需要两个后处理的采样器,和一个统一缓冲
 		samplerCount += meshObjects.size()*2;
-		uniformBufferCount += meshObjects.size();
 		uint32_t maxSets = uniformBufferCount; // 每个材质对应一个描述符集
 
 		std::array<VkDescriptorPoolSize, 2> poolSizes{};
@@ -1200,31 +1144,22 @@ private:
 	}
 
 	void createDescriptorSetLayoutBlend() {
-		VkDescriptorSetLayoutBinding uboLayoutBinding{};
-		uboLayoutBinding.binding = 0;
-		uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		uboLayoutBinding.descriptorCount = 1;
-
-		//指定着色器阶段,我们将使用 VK_SHADER_STAGE_VERTEX_BIT 来指定顶点着色器阶段
-		uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-
-		uboLayoutBinding.pImmutableSamplers = nullptr; // Optional
+		
 
 		VkDescriptorSetLayoutBinding samplerLayoutBinding{};
-		samplerLayoutBinding.binding = 1;
+		samplerLayoutBinding.binding = 0;
 		samplerLayoutBinding.descriptorCount = 1;
 		samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		samplerLayoutBinding.pImmutableSamplers = nullptr;
 		samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 		VkDescriptorSetLayoutBinding samplerLayoutBinding1{};
-		samplerLayoutBinding1.binding = 2;
+		samplerLayoutBinding1.binding = 1;
 		samplerLayoutBinding1.descriptorCount = 1;
 		samplerLayoutBinding1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		samplerLayoutBinding1.pImmutableSamplers = nullptr;
 		samplerLayoutBinding1.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-		std::array<VkDescriptorSetLayoutBinding, 3> bindings = {
-			uboLayoutBinding,
+		std::array<VkDescriptorSetLayoutBinding, 2> bindings = {
 			samplerLayoutBinding,
 			samplerLayoutBinding1
 		};
@@ -1475,25 +1410,13 @@ private:
 		scissor.extent = swapChainExtent;
 		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-		for (size_t i = 0; i < meshObjects.size(); i++) {
-			const auto& vulkanMesh = vulkanMeshes[i];
-
-			// 绑定统一的顶点缓冲区和索引缓冲区
-			VkDeviceSize offsets[] = { 0 };
-			vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vulkanMesh.vertexBuffer, offsets);
-			vkCmdBindIndexBuffer(commandBuffer, vulkanMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
-			// 绘制每个 Mesh
-			for (const auto& drawInfo : vulkanMesh.materialDrawInfos) {
-				// 绑定对应的材质描述集
-				vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+		
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
 					 colorBlendRenderer->getPipelineLayout(), 0, 1,
-					&descriptorSetBlend[i], 0, nullptr);
-
-				// 绘制当前 Mesh
-				vkCmdDrawIndexed(commandBuffer, drawInfo.indexCount, 1, drawInfo.indexOffset, 0, 0);
-			}
-		}
+					&descriptorSetBlend, 0, nullptr);
+		//只需要画一个全屏四边形，覆盖全部图像就行
+		vkCmdDraw(commandBuffer, 4, 1, 0, 0);
+		
 
 		vkCmdEndRenderPass(commandBuffer);
 
