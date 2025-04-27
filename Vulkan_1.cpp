@@ -31,8 +31,8 @@ const int MAX_FRAMES_IN_FLIGHT = 2;
 //统一缓冲对象UBO
 struct UniformBufferObject {
 	glm::mat4 model;
-	glm::mat4 view;
-	glm::mat4 proj[2];
+	glm::mat4 view[2];
+	glm::mat4 proj;
 };
 
 struct UniformBufferMaterial {
@@ -84,7 +84,7 @@ private:
 	};
 
 
-	Camera camera{ glm::vec3(0.0f, 1.0f, 3.5f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f), 37.0f, WIDTH / (float)HEIGHT, 0.1f, 10.0f };
+	Camera camera{ glm::vec3(0.0f, 1.0f, 3.5f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f), 60.0f, WIDTH / (float)HEIGHT, 0.05f, 10.0f };
 
 
 	std::vector<MeshObject> meshObjects; // 存储逻辑层的网格体
@@ -254,7 +254,7 @@ private:
 		barrier.image = resolveImage[1];
 		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		barrier.subresourceRange.levelCount = 1;
-		barrier.subresourceRange.layerCount = 1;
+		barrier.subresourceRange.layerCount = 2;
 		barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
@@ -279,7 +279,7 @@ private:
 		barrier1.image = resolveImage[1];
 		barrier1.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		barrier1.subresourceRange.levelCount = 1;
-		barrier1.subresourceRange.layerCount = 1;
+		barrier1.subresourceRange.layerCount = 2;
 		barrier1.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;          // 片段着色器读取完成
 		barrier1.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; // 颜色附件可以写入
 
@@ -402,7 +402,9 @@ private:
 				resolveImageView[i] = VK_NULL_HANDLE;
 			}
 		}
-
+		for (auto& des : descriptorSetBlend) {
+			vkFreeDescriptorSets(device, descriptorPool, 1, &des);
+		}
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
 	}
 
@@ -602,7 +604,7 @@ private:
 		glm::vec3 modelCenter = (minBounds + maxBounds) * 0.5f;
 
 		// 调整相机的位置和目标点
-		glm::vec3 cameraPosition = modelCenter + glm::vec3(0.0f, 0.0f, -3.7f); // 距离目标物体 3.5 个单位
+		glm::vec3 cameraPosition = modelCenter + glm::vec3(0.0f, 0.0f, -3.5f); 
 		camera.reset(cameraPosition, modelCenter, glm::vec3(0.0f, 1.0f, 0.0f)); // 重置相机
 
 	}
@@ -745,10 +747,10 @@ private:
 		}
 
 		//camera.rotate(rotationAngle, glm::vec3(0.0f, 1.0f,0.0f));
-		glm::mat4 ViewMatrix = camera.getViewMatrix();
+		//glm::mat4 ViewMatrix = camera.getViewMatrix();
 		
 		glm::mat4 projMatrix = camera.getProjectionMatrix();
-		projMatrix[1][1] = -projMatrix[1][1]; // 反转 Y 轴
+		
 		for (size_t i = 0; i < meshObjects.size(); i++) {
 			char* data = static_cast<char*>(perObjectUniformBuffers[i].mapped[0]);
 
@@ -758,21 +760,21 @@ private:
 			if (meshObjects[i].getParentIndex() != -1) {
 				ubo.model = meshObjects[meshObjects[i].getParentIndex()].getModelMatrix() * ubo.model;
 			}
-			ubo.view = ViewMatrix;
-			// 计算物体的深度
-			glm::vec3 objectPosition = glm::vec3(ubo.model[3]); // 提取物体的世界坐标
-			float objectDepth = glm::length(objectPosition - camera.getPosition()); // 计算物体到相机的距离
 
+			ubo.view[0] =camera.getLeftViewMatrix_Fixed();
+			ubo.view[1] = camera.getRightViewMatrix_Fixed();
 
-			ubo.proj[0] = projMatrix;
-			ubo.proj[1] = camera.getProjectionMatrixWithDepthOffset(objectDepth); 
-			ubo.proj[1][1][1] = -ubo.proj[1][1][1]; // 反转 Y 轴
+			ubo.proj = projMatrix;
+		
+			
 			memcpy(data, &ubo, sizeof(ubo));
 			data +=VulkanUtils::alignOffset(sizeof(ubo), minimumUboAlignment);
 
 			//更新观察点
 			
-			glm::vec3 cameraPos = camera.getPosition();
+			glm::vec3 cameraPos[2];
+			cameraPos[0]= camera.getLeftEye();
+			cameraPos[1] = camera.getRightEye();
 			memcpy(data, &cameraPos, sizeof(cameraPos));
 			data +=VulkanUtils::alignOffset(sizeof(cameraPos), minimumUboAlignment);
 
@@ -810,7 +812,7 @@ private:
 			graphicsQueue,
 			depthImage, 
 			depthFormat,
-			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,2);
 		//std::cout << "DepthImageView create: " << (int*)depthImageView << std::endl;
 
 	}
@@ -873,7 +875,8 @@ private:
 				resolveImage[i],
 				resolveFormat,
 				VK_IMAGE_LAYOUT_UNDEFINED,
-				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				2
 			);
 		}
 	}
@@ -1088,9 +1091,9 @@ private:
 				VkDescriptorBufferInfo eyeBufferInfo{};
 				eyeBufferInfo.buffer = perObjectUniformBuffers[i].buffers[0];
 				eyeBufferInfo.offset = offset;
-				eyeBufferInfo.range = sizeof(glm::vec3);
+				eyeBufferInfo.range = sizeof(glm::vec3)*2;
 
-				offset +=VulkanUtils::alignOffset(sizeof(glm::vec3), minimumUboAlignment);
+				offset +=VulkanUtils::alignOffset(sizeof(glm::vec3)*2, minimumUboAlignment);
 				// 材质属性
 				VkDescriptorBufferInfo materialBufferInfo{};
 				//材质缓冲区是每个材质都不一样的，所以不能用第一个。而是用当前材质的
@@ -1559,22 +1562,6 @@ private:
 	}
 
 
-	//创建着色器模块
-	//VkShaderModule createShaderModule(const std::vector<char>& code) {
-	//	VkShaderModuleCreateInfo createInfo{};
-	//	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-	//	createInfo.codeSize = code.size();
-	//	//vector默认满足对齐要求，所以可以直接转换为uint32_t*
-	//	createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
-
-	//	VkShaderModule shaderModule;
-	//	if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
-	//		throw std::runtime_error("failed to create shader module!");
-	//	}
-	//	return shaderModule;
-	//}
-
-
 	//创建图像视图
 	void createImageViews() {
 		swapChainImageViews.resize(swapChainImages.size());
@@ -1584,7 +1571,6 @@ private:
 			//std::cout << "swapChainImageViews created：" << (int*)swapChainImageViews[i] << std::endl;
 		}
 	}
-
 
 	//创建交换链
 	void createSwapChain() {
@@ -2052,47 +2038,10 @@ private:
 				vkFreeMemory(device, memery, nullptr);
 			}
 		}
-		for (size_t i = 0; i < BlendFramebuffers.size(); i++) {
-			vkDestroyFramebuffer(device, BlendFramebuffers[i], nullptr);
-		}
-		// 销毁深度图像
-		if (depthImageView != VK_NULL_HANDLE) {
-			vkDestroyImageView(device, depthImageView, nullptr);
-			depthImageView = VK_NULL_HANDLE;
-		}
-		if (depthImage != VK_NULL_HANDLE) {
-			vkDestroyImage(device, depthImage, nullptr);
-			depthImage = VK_NULL_HANDLE;
-		}
-		if (depthImageMemory != VK_NULL_HANDLE) {
-			vkFreeMemory(device, depthImageMemory, nullptr);
-			depthImageMemory = VK_NULL_HANDLE;
-		}
-
-	
-		for (int i = 0; i < 2; i++) {
-			if (resolveImage[i] != VK_NULL_HANDLE) {
-				vkDestroyImage(device, resolveImage[i], nullptr);
-				resolveImage[i] = VK_NULL_HANDLE;
-			}
-			if (resolveImageMemory[i] != VK_NULL_HANDLE) {
-				vkFreeMemory(device, resolveImageMemory[i], nullptr);
-				resolveImageMemory[i] = VK_NULL_HANDLE;
-			}
-		}
 		
-		for (int i = 0; i < 4; i++) {
-			if (resolveImageView[i] != VK_NULL_HANDLE) {
-				vkDestroyImageView(device, resolveImageView[i], nullptr);
-				resolveImageView[i] = VK_NULL_HANDLE;
-			}
-		}
 
-		vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+		
 
-		for (auto& des : descriptorSetBlend) {
-			vkFreeDescriptorSets(device, descriptorPool, 1, &des);
-		}
 
 		//销毁描述符池
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
@@ -2101,6 +2050,8 @@ private:
 		
 		delete renderer;
 		delete colorBlendRenderer;
+		vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+
 		//销毁命令池
 		vkDestroyCommandPool(device, commandPool, nullptr);
 		//销毁逻辑设备

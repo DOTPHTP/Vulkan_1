@@ -10,7 +10,9 @@ class MeshObject {
 public:
     // 构造函数，接受从 ModelLoader 加载的网格和材质数据
     MeshObject(const std::vector<ModelLoader::Mesh>& meshes, const std::vector<ModelLoader::Material>& materials)
-        : meshes(meshes), materials(materials) {}
+        : meshes(meshes), materials(materials) {
+        calculateLocalCenter(); // 初始化时计算局部中心点
+    }
 
     // 获取模型的变换矩阵
     // 获取模型的变换矩阵
@@ -88,6 +90,11 @@ public:
             }
         }
     }
+    // 获取世界坐标系下的中心点
+    glm::vec3 getWorldCenter() const {
+        glm::vec4 worldCenter = getModelMatrix() * glm::vec4(localCenter, 1.0f);
+        return glm::vec3(worldCenter);
+    }
     void setParentIndex(int index) {
         parentIndex = index;
     }
@@ -111,5 +118,22 @@ private:
     std::vector<ModelLoader::Mesh> meshes;       // 网格数据
     std::vector<ModelLoader::Material> materials; // 材质数据
     int parentIndex = -1; // 父物体的索引，-1 表示没有父物体
-                         
+    glm::vec3 localCenter = { 0, 0, 0 }; // 局部坐标系下的中心点         
+    // 计算局部坐标系下的中心点
+    void calculateLocalCenter() {
+        glm::vec3 minBounds(std::numeric_limits<float>::max());
+        glm::vec3 maxBounds(std::numeric_limits<float>::lowest());
+
+        // 遍历所有网格的顶点，计算局部包围盒
+        for (const auto& mesh : meshes) {
+            for (const auto& vertex : mesh.vertices) {
+                minBounds = glm::min(minBounds, vertex.pos);
+                maxBounds = glm::max(maxBounds, vertex.pos);
+            }
+        }
+
+        // 计算局部中心点
+        localCenter = (minBounds + maxBounds) * 0.5f;
+    }
+
 };

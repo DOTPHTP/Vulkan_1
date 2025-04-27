@@ -78,7 +78,7 @@ public:
 
     // ×ª»»Í¼Ïñ²¼¾Ö
     static void transitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue graphicsQueue,
-                                      VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
+                                      VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout,uint32_t resourcecount = 1) {
         VkCommandBuffer commandBuffer = VulkanUtils::beginSingleTimeCommands(device, commandPool);
         	VkImageMemoryBarrier barrier{};
         	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -93,7 +93,7 @@ public:
         	barrier.subresourceRange.baseMipLevel = 0;
         	barrier.subresourceRange.levelCount = 1;
         	barrier.subresourceRange.baseArrayLayer = 0;
-        	barrier.subresourceRange.layerCount = 1;
+        	barrier.subresourceRange.layerCount = resourcecount;
         	VkPipelineStageFlags sourceStage;
         	VkPipelineStageFlags destinationStage;
 

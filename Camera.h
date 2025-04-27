@@ -67,7 +67,12 @@ public:
     glm::vec3 getPosition() const {
         return position;
     }
-
+	glm::vec3 getLeftEye() const {
+		return position - right * eyeOffset;
+	}
+	glm::vec3 getRightEye() const {
+		return position + right * eyeOffset;
+	}
     glm::vec3 getTarget() const {
         return target;
     }
@@ -82,29 +87,29 @@ public:
     glm::mat4 getViewMatrix() const {
         return glm::lookAt(position, target, up);
     }
-    glm::mat4 getLeftViewMatrix() const {
-        return glm::lookAt(position - eyeOffset*right,
-            target, up);
-    }
-
-    glm::mat4 getRightViewMatrix() const {
-        return glm::lookAt(position + eyeOffset*right,
-            target, up);
-    }
-
+    
     // 获取投影矩阵
     glm::mat4 getProjectionMatrix() const {
         glm::mat4 proj = glm::perspective(glm::radians(fov), aspectRatio, nearPlane, farPlane);
-        //proj[1][1] *= -1; // Vulkan 需要翻转 Y 轴,使用扩展支持
+        proj[1][1] *= -1; // Vulkan 需要翻转 Y 轴,使用扩展支持
         return proj;
     }
-	
-    glm::mat4 getProjectionMatrixWithDepthOffset( float objectDepth) const {
-        glm::mat4 proj = glm::perspective(glm::radians(fov), aspectRatio, nearPlane, farPlane);
-        float depthOffset = eyeOffset / objectDepth; // 偏移量与深度成反比
-        proj[2][0] -= depthOffset / aspectRatio; // 添加水平偏移
-       // proj[1][1] *= -1; // Vulkan 需要反转 Y 轴
-        return proj;
+	//这里使用平行相机，即同时平移相机和目标点
+    glm::mat4 getLeftViewMatrix_Fixed() const {
+        return glm::lookAt(
+            position - right * eyeOffset,
+            target - right*eyeOffset,
+            up
+        );
+    }
+
+    glm::mat4 getRightViewMatrix_Fixed() const {
+        
+        return glm::lookAt(
+            position + right * eyeOffset,
+            target + right * eyeOffset,
+            up
+        );
     }
 
     // 重置相机到初始状态
@@ -116,6 +121,15 @@ public:
         up = glm::normalize(glm::cross(right, forward));
         rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
     }
+
+	float geteyeOffset() const {
+		return eyeOffset;
+	}
+
+	void seteyeOffset(float offset) {
+		eyeOffset = offset;
+	}
+	
 private:
     glm::vec3 position;
     glm::vec3 forward;  // 前方向（目标方向）
@@ -123,7 +137,7 @@ private:
     glm::vec3 right;    // 右方向
     glm::quat rotation; // 相机的旋转四元数
     glm::vec3 target;   // 目标点
-    float eyeOffset = 0.1f; // 瞳孔间距
+    float eyeOffset = 0.05f; //屏幕视差
     float fov;
     float aspectRatio;
     float nearPlane;

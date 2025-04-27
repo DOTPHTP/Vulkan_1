@@ -1,5 +1,5 @@
 #version 450
-
+#extension GL_EXT_multiview : enable
 struct Material {
 	vec4 ambientColor;   // Ka: 环境光反射系数
 	vec4 diffuseColor;   // Kd: 漫反射系数
@@ -23,7 +23,7 @@ layout(binding = 1) uniform sampler2D texSampler;
 
 // 将 eye_position 包装到 uniform block 中
 layout(binding = 2) uniform EyePositionBlock {
-    vec3 eye_position;
+    vec3 eye_position[2];
 };
 
 // 将 Material 包装到 uniform block 中
@@ -43,7 +43,7 @@ void main() {
     vec3 L = normalize(vec3(light.lightPosition) - fragPosition);
 
     // 视线方向向量
-    vec3 V = normalize(eye_position - fragPosition);
+    vec3 V = normalize(eye_position[gl_ViewIndex] - fragPosition);
 
     // 半角向量
     vec3 H = normalize(L + V);
